@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "finance-dashboard",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "frontend/app.py", "--server.port", "8501"],
+      "port": 8501,
+      "env": {
+        "PYTHONPATH": "C:\\Users\\HMREY\\finance-app\\backend"
+      }
+    }
+  ]
+}

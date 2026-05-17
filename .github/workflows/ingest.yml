@@ -1,0 +1,60 @@
+name: Daily Ingestion
+
+on:
+  schedule:
+    # 7 AM Mexico City (UTC-6) every day
+    - cron: "0 13 * * *"
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    environment: production   # secrets live in the "production" Environment
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      # Write Gmail OAuth2 token to a temp file with restricted permissions.
+      # /tmp/secrets is accessible without root; /run/secrets/ is not.
+      - name: Write Gmail token
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          mkdir -p /tmp/secrets
+          printf '%s' "$GMAIL_TOKEN_JSON" > /tmp/secrets/gmail_token.json
+          chmod 600 /tmp/secrets/gmail_token.json
+
+      - name: Run ingestion pipeline
+        env:
+          # ── Module resolution ──────────────────────────────────────────
+          PYTHONPATH: ${{ github.workspace }}/backend
+          # ── Supabase ──────────────────────────────────────────────────
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY:         ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_JWT_SECRET:       ${{ secrets.SUPABASE_JWT_SECRET }}
+          # ── Gmail ─────────────────────────────────────────────────────
+          GMAIL_CLIENT_ID:     ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_TOKEN_PATH:    /tmp/secrets/gmail_token.json
+          # ── Mercado Pago ──────────────────────────────────────────────
+          MP_ACCESS_TOKEN: ${{ secrets.MP_ACCESS_TOKEN }}
+          # ── Encryption (needed to decrypt vault tokens) ───────────────
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          # ── Runtime ───────────────────────────────────────────────────
+          FINANCE_USER_ID: ${{ secrets.FINANCE_USER_ID }}
+          APP_ENV: production
+          LOG_LEVEL: INFO
+        run: python -m ingestion.pipeline
+
+      - name: Wipe token from disk
+        if: always()
+        run: rm -f /tmp/secrets/gmail_token.json

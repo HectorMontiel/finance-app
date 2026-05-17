@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Unit tests ─────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r backend/requirements.txt
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: pytest backend/tests/unit -v --tb=short
+
+  # ── Security scan ──────────────────────────────────────────────────────
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install bandit==1.8.0
+      - run: bandit -r backend/ -ll -ii --exit-zero
+
+  # ── Deploy backend API (Render) ────────────────────────────────────────
+  # Optional — only runs when RENDER_DEPLOY_HOOK_API secret is configured.
+  # The Streamlit frontend auto-deploys from GitHub via Streamlit Cloud;
+  # no separate deploy step is needed for it.
+  deploy-api:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Trigger Render deploy (backend API)
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_API }}
+        run: |
+          if [ -n "$HOOK" ]; then
+            curl -fsS -X POST "$HOOK"
+            echo "✓ Render deploy triggered"
+          else
+            echo "ℹ  RENDER_DEPLOY_HOOK_API not configured — skipping backend deploy"
+          fi

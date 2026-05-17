@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.bandit]
+exclude_dirs = ["backend/tests"]
+skips = []
+severity = "medium"
+confidence = "medium"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
