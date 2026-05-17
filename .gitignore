@@ -46,6 +46,7 @@ desktop.ini
 *.log
 *.txt
 !README.txt
+!requirements.txt
 
 # ── Runtime artefacts ────────────────────────────────────────────────────
 *.pid

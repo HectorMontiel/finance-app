@@ -1,0 +1,9 @@
+# Frontend dependencies — used by Streamlit Community Cloud.
+# Keep in sync with what frontend/app.py actually imports.
+
+streamlit==1.41.0
+plotly>=5.18,<6
+supabase==2.10.0
+pandas>=2.0,<3
+numpy>=1.24,<2
+python-dateutil>=2.8,<3
