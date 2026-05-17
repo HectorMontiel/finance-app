@@ -958,6 +958,7 @@ def show_dashboard(user_id: str):
             st.markdown(f'<span class="sl">📄 Transacciones ({len(df)})</span>',
                         unsafe_allow_html=True)
             disp = df[["fecha","comercio","monto","cat","card_name"]].copy()
+            disp = disp.sort_values("monto", ascending=False)
             disp["fecha"] = disp["fecha"].dt.strftime("%d/%m/%Y")
             disp["monto"] = disp["monto"].apply(lambda x: f"${x:,.2f}")
             disp.columns  = ["Fecha","Comercio","Monto","Categoría","Tarjeta"]
