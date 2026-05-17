@@ -439,8 +439,8 @@ def pc_top_merchants(df: pd.DataFrame, highlight_cat: str | None = None, n: int 
         showlegend=False,
         xaxis=dict(**_XDEF, showticklabels=False,
                    range=[0, float(top.max()) * 1.32]),
-        yaxis=dict(**_YDEF, showgrid=False,
-                   tickfont=dict(color="rgba(255,255,255,.55)", size=10)),
+        yaxis={**_YDEF, "showgrid": False,
+               "tickfont": dict(color="rgba(255,255,255,.55)", size=10)},
     ))
     st.plotly_chart(fig, use_container_width=True, key="merchants")
 
@@ -464,8 +464,8 @@ def pc_card_split(df: pd.DataFrame):
     fig.update_layout(**_layout(
         height=185, margin=dict(l=4, r=4, t=30, b=10),
         showlegend=False, bargap=0.35,
-        xaxis=dict(**_XDEF, tickangle=-12,
-                   tickfont=dict(color="rgba(255,255,255,.45)", size=9)),
+        xaxis={**_XDEF, "tickangle": -12,
+               "tickfont": dict(color="rgba(255,255,255,.45)", size=9)},
         yaxis=dict(**_YDEF, showticklabels=False),
     ))
     st.plotly_chart(fig, use_container_width=True, key="cards")
@@ -921,7 +921,7 @@ if _in_streamlit_runtime():
 #   Before starting, any streamlit process already running on PORT is killed,
 #   so pressing ▶ always gives you a fresh server with the latest code.
 
-if __name__ == "__main__" and __import__("os").environ.get("_SF_LAUNCHED") != "1":
+if __name__ == "__main__" and __import__("os").environ.get("_SF_LAUNCHED") != "1" and not _in_streamlit_runtime():
     import os
     import subprocess
     import threading
