@@ -303,6 +303,7 @@ def show_login():
             if st.button("Iniciar sesión", type="primary", use_container_width=True, key="li_btn"):
                 try:
                     s = _anon.auth.sign_in_with_password({"email": email, "password": pw})
+                    st.cache_data.clear()
                     st.session_state.update(access_token=s.session.access_token,
                                             user_id=s.user.id)
                     st.rerun()
@@ -698,6 +699,11 @@ def show_dashboard(user_id: str):
     if "click_ver" not in st.session_state:
         st.session_state["click_ver"] = 0
 
+    # ── Fresh load on first visit of each session ── #
+    if not st.session_state.get("_data_loaded"):
+        load_all.clear()
+        st.session_state["_data_loaded"] = True
+
     with st.spinner(""):
         rows = load_all(user_id)
     if not rows:
@@ -708,7 +714,7 @@ def show_dashboard(user_id: str):
     df_all = build_df(rows)
 
     # ── Header ── #
-    ha, hb = st.columns([8, 1])
+    ha, hb, hc = st.columns([7, 1, 1])
     with ha:
         st.markdown(
             "<p style='font-size:1.2rem;font-weight:900;margin:0 0 1px;color:#F8FAFC;'>"
@@ -717,6 +723,10 @@ def show_dashboard(user_id: str):
             f"Inteligencia financiera · {datetime.now().strftime('%d %b %Y')}</p>",
             unsafe_allow_html=True)
     with hb:
+        if st.button("↺", type="secondary", use_container_width=True, help="Actualizar datos"):
+            load_all.clear()
+            st.rerun()
+    with hc:
         if st.button("Salir", type="secondary", use_container_width=True):
             st.session_state.clear(); st.rerun()
 
