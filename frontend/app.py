@@ -226,27 +226,38 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif!important;-webkit-text-s
 """, unsafe_allow_html=True)
 
 # ══════════════════════════  GOOGLE OAUTH HELPERS  ═══════════════════════════
-# Single OAuth consent: login (openid/email) + Gmail read access together.
-_GOOGLE_SCOPES = [
-    "openid",
-    "email",
-    "profile",
-    "https://www.googleapis.com/auth/gmail.readonly",
-]
+# Two separate OAuth flows:
+#   1. LOGIN  — openid/email/profile only → no scary "unverified" warning
+#   2. GMAIL  — adds gmail.readonly → shows warning once, stored in vault
+_LOGIN_SCOPES = ["openid", "email", "profile"]
+_GMAIL_SCOPES = _LOGIN_SCOPES + ["https://www.googleapis.com/auth/gmail.readonly"]
 
 def _redirect_uri() -> str:
     return st.secrets.get("APP_URL", "http://localhost:8501")
 
-def _google_auth_url(client_id: str) -> str:
+def _google_login_url(client_id: str) -> str:
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
         "client_id":     client_id,
         "redirect_uri":  _redirect_uri(),
         "response_type": "code",
-        "scope":         " ".join(_GOOGLE_SCOPES),
-        "access_type":   "offline",
-        "prompt":        "consent",
+        "scope":         " ".join(_LOGIN_SCOPES),
         "state":         "login",
     })
+
+def _google_gmail_url(client_id: str, user_id: str) -> str:
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+        "client_id":     client_id,
+        "redirect_uri":  _redirect_uri(),
+        "response_type": "code",
+        "scope":         " ".join(_GMAIL_SCOPES),
+        "access_type":   "offline",
+        "prompt":        "consent",
+        "state":         f"gmail:{user_id}",
+    })
+
+# Keep alias for backwards compat
+def _google_auth_url(client_id: str) -> str:
+    return _google_login_url(client_id)
 
 def _exchange_gmail_code(code: str, client_id: str,
                          client_secret: str, redirect_uri: str) -> dict:
@@ -1024,16 +1035,14 @@ def show_dashboard(user_id: str):
 # ══════════════════════════  GMAIL CONNECT PAGE  ═════════════════════════════
 def show_gmail_connect(user_id: str):
     """Full-screen Gmail OAuth connect page shown after first login."""
-    client_id     = st.secrets.get("GMAIL_CLIENT_ID", "")
-    app_url       = st.secrets.get("APP_URL", "")
-
-    if not client_id or not app_url:
-        st.warning("Gmail OAuth no está configurado. Agrega GMAIL_CLIENT_ID y APP_URL en los secrets.")
+    client_id = st.secrets.get("GMAIL_CLIENT_ID", "")
+    if not client_id:
+        st.warning("Gmail OAuth no está configurado.")
         if st.button("Salir", type="secondary"):
             st.session_state.clear(); st.rerun()
         return
 
-    auth_url = _gmail_auth_url(client_id, app_url, state=user_id)
+    auth_url = _google_gmail_url(client_id, user_id)
 
     _, col, _ = st.columns([1, 1.4, 1])
     with col:
@@ -1115,34 +1124,52 @@ def _restore_session_from_cookies() -> bool:
     return False
 
 
-def _handle_google_callback(code: str) -> None:
-    """Exchange Google OAuth code for tokens, sign in to Supabase, store Gmail token."""
+def _handle_login_callback(code: str) -> None:
+    """Login-only callback: openid/email/profile — no Gmail scope, no scary warning."""
     client_id     = st.secrets.get("GMAIL_CLIENT_ID", "")
     client_secret = st.secrets.get("GMAIL_CLIENT_SECRET", "")
-    with st.spinner("Iniciando sesión con Google..."):
+    with st.spinner("Iniciando sesión..."):
         try:
-            tokens    = _exchange_gmail_code(code, client_id, client_secret, _redirect_uri())
-            id_token  = tokens.get("id_token", "")
-            resp      = _anon.auth.sign_in_with_id_token({"provider": "google", "token": id_token})
-            user_id   = resp.user.id
-            _store_gmail_token(user_id, tokens)
+            tokens   = _exchange_gmail_code(code, client_id, client_secret, _redirect_uri())
+            id_token = tokens.get("id_token", "")
+            resp     = _anon.auth.sign_in_with_id_token({"provider": "google", "token": id_token})
+            user_id  = resp.user.id
             st.query_params.clear()
             st.cache_data.clear()
             st.session_state.update(access_token=resp.session.access_token, user_id=user_id)
             _set_session_cookies(resp.session.access_token,
-                                 resp.session.refresh_token or "",
-                                 user_id)
+                                 resp.session.refresh_token or "", user_id)
             st.rerun()
         except Exception as exc:
             st.query_params.clear()
-            st.error(f"Error al iniciar sesión con Google: {exc}")
+            st.error(f"Error al iniciar sesión: {exc}")
+
+
+def _handle_gmail_callback(code: str, user_id: str) -> None:
+    """Gmail callback: stores gmail.readonly tokens in vault for ingestion pipeline."""
+    client_id     = st.secrets.get("GMAIL_CLIENT_ID", "")
+    client_secret = st.secrets.get("GMAIL_CLIENT_SECRET", "")
+    with st.spinner("Conectando Gmail..."):
+        try:
+            tokens = _exchange_gmail_code(code, client_id, client_secret, _redirect_uri())
+            _store_gmail_token(user_id, tokens)
+            st.query_params.clear()
+            st.success("✅ Gmail conectado. Tus transacciones se importarán automáticamente.")
+            st.rerun()
+        except Exception as exc:
+            st.query_params.clear()
+            st.error(f"Error al conectar Gmail: {exc}")
 
 
 def main():
-    # ── Handle Google OAuth callback ── #
-    qp = st.query_params
+    # ── Handle OAuth callbacks ── #
+    qp    = st.query_params
+    state = qp.get("state", "")
     if "code" in qp:
-        _handle_google_callback(qp.get("code", ""))
+        if state.startswith("gmail:"):
+            _handle_gmail_callback(qp.get("code", ""), state.split(":", 1)[1])
+        else:
+            _handle_login_callback(qp.get("code", ""))
         return
 
     # ── Restore session from cookies if session_state was cleared ── #
@@ -1153,7 +1180,11 @@ def main():
     if not st.session_state.get("access_token"):
         show_login()
     else:
-        show_dashboard(st.session_state["user_id"])
+        uid = st.session_state["user_id"]
+        if not _check_gmail_connected(uid):
+            show_gmail_connect(uid)
+        else:
+            show_dashboard(uid)
 
 # ── Runtime detection ───────────────────────────────────────────────────── #
 # Call main() when we are genuinely inside a Streamlit execution context:
