@@ -269,6 +269,17 @@ def _exchange_gmail_code(code: str, client_id: str,
     r.raise_for_status()
     return r.json()
 
+def _check_gmail_connected(user_id: str) -> bool:
+    try:
+        client = create_client(st.secrets["SUPABASE_URL"],
+                               st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
+        res = (client.schema("finanzas").table("token_vault")
+               .select("user_id").eq("user_id", user_id)
+               .eq("service", "gmail_oauth2").execute())
+        return bool(res.data)
+    except Exception:
+        return False
+
 def _store_gmail_token(user_id_str: str, token_data: dict) -> None:
     import os as _os2
     from uuid import UUID
