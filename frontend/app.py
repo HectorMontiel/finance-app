@@ -1050,9 +1050,10 @@ def show_gmail_connect(user_id: str):
 def _set_session_cookies(access_token: str, refresh_token: str, user_id: str):
     """Persist session in browser cookies so refresh doesn't require re-login."""
     max_age = 7 * 24 * 3600
+    secure = "; secure" if _redirect_uri().startswith("https") else ""
     st.markdown(f"""<script>
 (function(){{
-  var exp = "; max-age={max_age}; path=/; samesite=lax";
+  var exp = "; max-age={max_age}; path=/{secure}; samesite=strict";
   document.cookie = "sf_at={access_token}" + exp;
   document.cookie = "sf_rt={refresh_token}" + exp;
   document.cookie = "sf_uid={user_id}" + exp;
