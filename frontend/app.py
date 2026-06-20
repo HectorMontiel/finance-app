@@ -35,10 +35,7 @@ INCOME_BIWEEKLY = 13_000
 INCOME_MONTHLY  = INCOME_BIWEEKLY * 2          # 26 000 MXN
 SAVINGS_TARGET  = 0.20
 
-CARD_MAP = {
-    "8518": "Like U 💜", "0528": "Gold 🟡",
-    "9567": "Gold Digital 🔵", "4521": "Débito 🟢",
-}
+# CARD_MAP removed — aliases are now stored per-user in finanzas.card_aliases
 CAT_LABELS = {
     "food": "Comida", "transport": "Transporte",
     "entertainment": "Entretenimiento", "health": "Salud",
@@ -313,6 +310,32 @@ def show_login():
             "para importar movimientos de Santander automáticamente.</p>",
             unsafe_allow_html=True)
 
+# ══════════════════════════  CARD ALIASES  ═══════════════════════════════════
+@st.cache_data(ttl=0, show_spinner=False)
+def load_card_aliases(user_id: str) -> dict[str, str]:
+    """Load user's card aliases from DB. Returns {card_key: alias}."""
+    try:
+        client = create_client(st.secrets["SUPABASE_URL"],
+                               st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
+        res = (client.schema("finanzas").table("card_aliases")
+               .select("card_key,alias").eq("user_id", user_id).execute())
+        return {r["card_key"]: r["alias"] for r in (res.data or [])}
+    except Exception:
+        return {}
+
+def save_card_alias(user_id: str, card_key: str, alias: str) -> None:
+    client = create_client(st.secrets["SUPABASE_URL"],
+                           st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
+    (client.schema("finanzas").table("card_aliases")
+     .upsert({"user_id": user_id, "card_key": card_key, "alias": alias},
+             on_conflict="user_id,card_key").execute())
+    load_card_aliases.clear()
+
+def card_display_name(last4: str, aliases: dict) -> str:
+    """Return alias if set, else ****last4."""
+    return aliases.get(last4, f"****{last4}")
+
+
 # ══════════════════════════  DATA  ═══════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
 def load_all(user_id: str) -> list[dict]:
@@ -325,18 +348,18 @@ def load_all(user_id: str) -> list[dict]:
          .order("fecha", desc=True).limit(2000).execute())
     return r.data or []
 
-def build_df(rows):
+def build_df(rows, aliases: dict | None = None):
+    aliases = aliases or {}
     df = pd.DataFrame(rows)
     df["fecha"]     = pd.to_datetime(df["fecha"], format="ISO8601", utc=True)
     df["monto"]     = df["monto"].astype(float)
     df["mes"]       = df["fecha"].dt.to_period("M").dt.to_timestamp()
     df["cat"]       = df["categoria"].map(lambda c: CAT_LABELS.get(c, c.title()))
     df["tarjeta"]   = df["concepto"].str.extract(r"\*{4}(\d{4})")
-    # MP transactions carry no card ending → label them distinctly
     df["card_name"] = df.apply(
-        lambda r: "Mercado Pago 💜"
+        lambda r: aliases.get("mp", "Mercado Pago 💜")
         if r.get("fuente") == "mercado_pago"
-        else (CARD_MAP.get(r["tarjeta"], f"****{r['tarjeta']}")
+        else (card_display_name(r["tarjeta"], aliases)
               if pd.notna(r["tarjeta"]) else "Sin tarjeta"),
         axis=1,
     )
@@ -685,6 +708,8 @@ def show_dashboard(user_id: str):
         load_all.clear()
         st.session_state["_data_loaded"] = True
 
+    aliases = load_card_aliases(user_id)
+
     with st.spinner(""):
         rows = load_all(user_id)
     if not rows:
@@ -692,7 +717,7 @@ def show_dashboard(user_id: str):
         if st.button("Salir"): st.session_state.clear(); st.rerun()
         return
 
-    df_all = build_df(rows)
+    df_all = build_df(rows, aliases)
 
     # ── Header ── #
     ha, hb, hc = st.columns([7, 1, 1])
@@ -711,6 +736,32 @@ def show_dashboard(user_id: str):
         if st.button("Salir", type="secondary", use_container_width=True):
             _clear_session_cookies()
             st.session_state.clear(); st.rerun()
+
+    # ── Card alias manager ── #
+    card_endings = sorted(df_all["tarjeta"].dropna().unique())
+    has_mp = (df_all.get("fuente", pd.Series()) == "mercado_pago").any() if "fuente" in df_all.columns else False
+    with st.expander("💳 Mis tarjetas — renombrar", expanded=False):
+        st.markdown(
+            "<p style='color:rgba(255,255,255,.4);font-size:.72rem;margin:0 0 10px;'>"
+            "Los nombres que pongas aquí se guardan en tu perfil y se usan en todas las gráficas.</p>",
+            unsafe_allow_html=True)
+        pending = {}
+        cols_per_row = 3
+        all_keys = list(card_endings) + (["mp"] if has_mp else [])
+        for i in range(0, len(all_keys), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j, key in enumerate(all_keys[i:i+cols_per_row]):
+                label = f"Mercado Pago" if key == "mp" else f"****{key}"
+                default = aliases.get(key, "Mercado Pago 💜" if key == "mp" else f"****{key}")
+                val = cols[j].text_input(label, value=default, key=f"ca_{key}")
+                if val != default:
+                    pending[key] = val
+        if pending:
+            if st.button("💾 Guardar nombres", type="primary"):
+                for k, v in pending.items():
+                    save_card_alias(user_id, k, v)
+                st.success("✅ Nombres guardados")
+                st.rerun()
 
     # ── Filters (single row) ── #
     st.markdown('<div class="fs">', unsafe_allow_html=True)
