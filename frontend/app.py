@@ -228,21 +228,27 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif!important;-webkit-text-s
 </style>
 """, unsafe_allow_html=True)
 
-# ══════════════════════════  GMAIL OAUTH HELPERS  ════════════════════════════
-_GMAIL_SCOPES = [
+# ══════════════════════════  GOOGLE OAUTH HELPERS  ═══════════════════════════
+# Single OAuth consent: login (openid/email) + Gmail read access together.
+_GOOGLE_SCOPES = [
+    "openid",
+    "email",
+    "profile",
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/userinfo.email",
 ]
 
-def _gmail_auth_url(client_id: str, redirect_uri: str, state: str) -> str:
+def _redirect_uri() -> str:
+    return st.secrets.get("APP_URL", "http://localhost:8501")
+
+def _google_auth_url(client_id: str) -> str:
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
         "client_id":     client_id,
-        "redirect_uri":  redirect_uri,
+        "redirect_uri":  _redirect_uri(),
         "response_type": "code",
-        "scope":         " ".join(_GMAIL_SCOPES),
+        "scope":         " ".join(_GOOGLE_SCOPES),
         "access_type":   "offline",
         "prompt":        "consent",
-        "state":         state,
+        "state":         "login",
     })
 
 def _exchange_gmail_code(code: str, client_id: str,
@@ -254,17 +260,6 @@ def _exchange_gmail_code(code: str, client_id: str,
     }, timeout=15)
     r.raise_for_status()
     return r.json()
-
-def _check_gmail_connected(user_id: str) -> bool:
-    try:
-        client = create_client(st.secrets["SUPABASE_URL"],
-                               st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
-        res = (client.schema("finanzas").table("token_vault")
-               .select("user_id").eq("user_id", user_id)
-               .eq("service", "gmail_oauth2").execute())
-        return bool(res.data)
-    except Exception:
-        return False
 
 def _store_gmail_token(user_id_str: str, token_data: dict) -> None:
     import os as _os2
@@ -286,51 +281,28 @@ def show_login():
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
         st.markdown("""
-        <div style="margin-top:60px;background:#0d1933;
+        <div style="margin-top:80px;background:#0d1933;
              border:1px solid rgba(255,255,255,.08);border-radius:10px;
-             padding:28px 32px 20px;">
-          <div style="font-size:1.7rem;font-weight:800;color:#F8FAFC;margin-bottom:4px;">
-              💳 Mis Finanzas</div>
-          <div style="color:rgba(255,255,255,.38);font-size:.82rem;margin-bottom:4px;">
-              Inteligencia financiera personal</div>
+             padding:36px 32px 28px;text-align:center;">
+          <div style="font-size:2rem;margin-bottom:10px;">💳</div>
+          <div style="font-size:1.55rem;font-weight:800;color:#F8FAFC;margin-bottom:6px;">
+              Mis Finanzas</div>
+          <div style="color:rgba(255,255,255,.35);font-size:.82rem;margin-bottom:24px;
+               line-height:1.5;">
+              Inteligencia financiera personal.<br>
+              Inicia sesión con tu cuenta de Google para continuar.
+          </div>
         </div>""", unsafe_allow_html=True)
-
-        tab_in, tab_up = st.tabs(["Iniciar sesión", "Crear cuenta"])
-
-        with tab_in:
-            email = st.text_input("Email", placeholder="correo@gmail.com", key="li_email")
-            pw    = st.text_input("Contraseña", type="password", placeholder="••••••••", key="li_pw")
-            if st.button("Iniciar sesión", type="primary", use_container_width=True, key="li_btn"):
-                try:
-                    s = _anon.auth.sign_in_with_password({"email": email, "password": pw})
-                    st.cache_data.clear()
-                    st.session_state.update(access_token=s.session.access_token,
-                                            user_id=s.user.id)
-                    st.rerun()
-                except Exception:
-                    st.error("Credenciales incorrectas.")
-
-        with tab_up:
-            st.markdown("<p style='color:rgba(255,255,255,.35);font-size:.72rem;margin-bottom:4px;'>"
-                        "Crea tu cuenta y conecta tu Gmail para comenzar.</p>",
-                        unsafe_allow_html=True)
-            email2 = st.text_input("Email", placeholder="nuevo@gmail.com", key="su_email")
-            pw2    = st.text_input("Contraseña", type="password",
-                                   placeholder="mínimo 8 caracteres", key="su_pw")
-            pw2c   = st.text_input("Confirmar contraseña", type="password",
-                                   placeholder="••••••••", key="su_pw2")
-            if st.button("Crear cuenta", type="primary", use_container_width=True, key="su_btn"):
-                if pw2 != pw2c:
-                    st.error("Las contraseñas no coinciden.")
-                elif len(pw2) < 8:
-                    st.error("La contraseña debe tener al menos 8 caracteres.")
-                else:
-                    try:
-                        _anon.auth.sign_up({"email": email2, "password": pw2})
-                        st.success("✅ Cuenta creada. Revisa tu correo para verificarla, "
-                                   "luego inicia sesión.")
-                    except Exception as e:
-                        st.error(f"Error al crear cuenta: {e}")
+        st.markdown("<div style='height:12px'/>", unsafe_allow_html=True)
+        auth_url = _google_auth_url(st.secrets.get("GMAIL_CLIENT_ID", ""))
+        st.link_button("  Continuar con Google", auth_url,
+                       use_container_width=True, type="primary")
+        st.markdown(
+            "<p style='text-align:center;color:rgba(255,255,255,.22);font-size:.68rem;"
+            "margin-top:10px;line-height:1.5;'>"
+            "Al continuar autorizas acceso de <strong>solo lectura</strong> a tu Gmail<br>"
+            "para importar movimientos de Santander automáticamente.</p>",
+            unsafe_allow_html=True)
 
 # ══════════════════════════  DATA  ═══════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1014,38 +986,40 @@ def show_gmail_connect(user_id: str):
 
 
 # ══════════════════════════  MAIN  ═══════════════════════════════════════════
+def _handle_google_callback(code: str) -> None:
+    """Exchange Google OAuth code for tokens, sign in to Supabase, store Gmail token."""
+    client_id     = st.secrets.get("GMAIL_CLIENT_ID", "")
+    client_secret = st.secrets.get("GMAIL_CLIENT_SECRET", "")
+    with st.spinner("Iniciando sesión con Google..."):
+        try:
+            tokens    = _exchange_gmail_code(code, client_id, client_secret, _redirect_uri())
+            id_token  = tokens.get("id_token", "")
+            # Authenticate with Supabase using Google ID token
+            resp      = _anon.auth.sign_in_with_id_token({"provider": "google", "token": id_token})
+            user_id   = resp.user.id
+            # Store Gmail tokens in vault for the ingestion pipeline
+            _store_gmail_token(user_id, tokens)
+            st.query_params.clear()
+            st.cache_data.clear()
+            st.session_state.update(access_token=resp.session.access_token, user_id=user_id)
+            st.rerun()
+        except Exception as exc:
+            st.query_params.clear()
+            st.error(f"Error al iniciar sesión con Google: {exc}")
+
+
 def main():
-    # ── Handle Gmail OAuth callback (arrives without active session) ── #
+    # ── Handle Google OAuth callback ── #
     qp = st.query_params
-    if "code" in qp and "state" in qp:
-        user_id_from_state = qp.get("state", "")
-        code               = qp.get("code", "")
-        client_id          = st.secrets.get("GMAIL_CLIENT_ID", "")
-        client_secret      = st.secrets.get("GMAIL_CLIENT_SECRET", "")
-        app_url            = st.secrets.get("APP_URL", "")
-        with st.spinner("Conectando Gmail..."):
-            try:
-                token_data = _exchange_gmail_code(code, client_id, client_secret, app_url)
-                _store_gmail_token(user_id_from_state, token_data)
-                st.query_params.clear()
-                st.session_state["gmail_just_connected"] = True
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Error al conectar Gmail: {exc}")
-                st.query_params.clear()
+    if "code" in qp:
+        _handle_google_callback(qp.get("code", ""))
         return
 
-    # ── Normal app flow ── #
+    # ── Normal flow ── #
     if not st.session_state.get("access_token"):
-        if st.session_state.pop("gmail_just_connected", False):
-            st.success("✅ Gmail conectado exitosamente. Inicia sesión para ver tu dashboard.")
         show_login()
     else:
-        uid = st.session_state["user_id"]
-        if not _check_gmail_connected(uid):
-            show_gmail_connect(uid)
-        else:
-            show_dashboard(uid)
+        show_dashboard(st.session_state["user_id"])
 
 # ── Runtime detection ───────────────────────────────────────────────────── #
 # Call main() when we are genuinely inside a Streamlit execution context:
