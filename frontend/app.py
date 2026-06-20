@@ -267,11 +267,20 @@ def _store_gmail_token(user_id_str: str, token_data: dict) -> None:
     from app.core.encryption import EncryptionService
     from app.core.token_vault import TokenVault
     _os2.environ["ENCRYPTION_KEY"] = st.secrets.get("ENCRYPTION_KEY", "")
+    # Convert raw OAuth response to google.oauth2.credentials format
+    formatted = {
+        "token":         token_data.get("access_token", ""),
+        "refresh_token": token_data.get("refresh_token", ""),
+        "token_uri":     "https://oauth2.googleapis.com/token",
+        "client_id":     st.secrets.get("GMAIL_CLIENT_ID", ""),
+        "client_secret": st.secrets.get("GMAIL_CLIENT_SECRET", ""),
+        "scopes":        ["https://www.googleapis.com/auth/gmail.readonly"],
+    }
     enc   = EncryptionService.from_env()
     db    = create_client(st.secrets["SUPABASE_URL"],
                           st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
     vault = TokenVault(db=db, encryption=enc)
-    vault.store(UUID(user_id_str), "gmail_oauth2", json.dumps(token_data))
+    vault.store(UUID(user_id_str), "gmail_oauth2", json.dumps(formatted))
 
 
 # ══════════════════════════  AUTH  ═══════════════════════════════════════════
@@ -700,6 +709,7 @@ def show_dashboard(user_id: str):
             st.rerun()
     with hc:
         if st.button("Salir", type="secondary", use_container_width=True):
+            _clear_session_cookies()
             st.session_state.clear(); st.rerun()
 
     # ── Filters (single row) ── #
@@ -986,6 +996,61 @@ def show_gmail_connect(user_id: str):
 
 
 # ══════════════════════════  MAIN  ═══════════════════════════════════════════
+def _set_session_cookies(access_token: str, refresh_token: str, user_id: str):
+    """Persist session in browser cookies so refresh doesn't require re-login."""
+    max_age = 7 * 24 * 3600
+    st.markdown(f"""<script>
+(function(){{
+  var exp = "; max-age={max_age}; path=/; samesite=lax";
+  document.cookie = "sf_at={access_token}" + exp;
+  document.cookie = "sf_rt={refresh_token}" + exp;
+  document.cookie = "sf_uid={user_id}" + exp;
+}})();
+</script>""", unsafe_allow_html=True)
+
+
+def _clear_session_cookies():
+    st.markdown("""<script>
+(function(){
+  ["sf_at","sf_rt","sf_uid"].forEach(function(n){
+    document.cookie = n + "=; max-age=0; path=/";
+  });
+})();
+</script>""", unsafe_allow_html=True)
+
+
+def _restore_session_from_cookies() -> bool:
+    """Try to restore session from browser cookies. Returns True if successful."""
+    try:
+        cookies     = st.context.cookies
+        access_token = cookies.get("sf_at", "")
+        refresh_token = cookies.get("sf_rt", "")
+        user_id      = cookies.get("sf_uid", "")
+        if not access_token or not user_id:
+            return False
+        # Validate token with Supabase
+        user_resp = _anon.auth.get_user(access_token)
+        if user_resp and user_resp.user:
+            st.session_state.update(access_token=access_token, user_id=user_resp.user.id)
+            return True
+    except Exception:
+        # Token expired — try refresh
+        try:
+            cookies = st.context.cookies
+            refresh_token = cookies.get("sf_rt", "")
+            if refresh_token:
+                resp = _anon.auth.refresh_session(refresh_token)
+                _set_session_cookies(resp.session.access_token,
+                                     resp.session.refresh_token,
+                                     resp.user.id)
+                st.session_state.update(access_token=resp.session.access_token,
+                                        user_id=resp.user.id)
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _handle_google_callback(code: str) -> None:
     """Exchange Google OAuth code for tokens, sign in to Supabase, store Gmail token."""
     client_id     = st.secrets.get("GMAIL_CLIENT_ID", "")
@@ -994,14 +1059,15 @@ def _handle_google_callback(code: str) -> None:
         try:
             tokens    = _exchange_gmail_code(code, client_id, client_secret, _redirect_uri())
             id_token  = tokens.get("id_token", "")
-            # Authenticate with Supabase using Google ID token
             resp      = _anon.auth.sign_in_with_id_token({"provider": "google", "token": id_token})
             user_id   = resp.user.id
-            # Store Gmail tokens in vault for the ingestion pipeline
             _store_gmail_token(user_id, tokens)
             st.query_params.clear()
             st.cache_data.clear()
             st.session_state.update(access_token=resp.session.access_token, user_id=user_id)
+            _set_session_cookies(resp.session.access_token,
+                                 resp.session.refresh_token or "",
+                                 user_id)
             st.rerun()
         except Exception as exc:
             st.query_params.clear()
@@ -1015,7 +1081,11 @@ def main():
         _handle_google_callback(qp.get("code", ""))
         return
 
-    # ── Normal flow ── #
+    # ── Restore session from cookies if session_state was cleared ── #
+    if not st.session_state.get("access_token"):
+        _restore_session_from_cookies()
+
+    # ── Route ── #
     if not st.session_state.get("access_token"):
         show_login()
     else:
