@@ -773,7 +773,7 @@ def show_dashboard(user_id: str):
     with f2:
         cards_avail = sorted(df_all["tarjeta"].dropna().unique())
         card_opts   = ["Todas las tarjetas"] + [
-            f"{CARD_MAP.get(c,c)} (****{c})" for c in cards_avail]
+            f"{card_display_name(c, aliases)} (****{c})" for c in cards_avail]
         card_sel = st.selectbox("Tarjeta", card_opts, label_visibility="collapsed")
     with f3:
         all_cats = ["Todas las categorías"] + sorted(df_all["cat"].unique())
