@@ -1002,11 +1002,23 @@ def show_dashboard(user_id: str):
                         unsafe_allow_html=True)
             disp = df[["fecha","comercio","monto","cat","card_name"]].copy()
             disp = disp.sort_values("monto", ascending=False)
-            disp["fecha"] = disp["fecha"].dt.strftime("%d/%m/%Y")
-            disp["monto"] = disp["monto"].apply(lambda x: f"${x:,.2f}")
+            disp["fecha"] = disp["fecha"].dt.tz_localize(None)  # remove tz for display
             disp.columns  = ["Fecha","Comercio","Monto","Categoría","Tarjeta"]
-            st.dataframe(disp, use_container_width=True, hide_index=True,
-                         height=min(400, 35*min(len(disp),13)+38))
+            st.dataframe(
+                disp,
+                use_container_width=True,
+                hide_index=True,
+                height=min(400, 35*min(len(disp),13)+38),
+                column_config={
+                    "Fecha": st.column_config.DatetimeColumn(
+                        "Fecha", format="DD/MM/YYYY", width="small"),
+                    "Monto": st.column_config.NumberColumn(
+                        "Monto", format="$%.2f", width="small"),
+                    "Comercio": st.column_config.TextColumn("Comercio", width="medium"),
+                    "Categoría": st.column_config.TextColumn("Categoría", width="small"),
+                    "Tarjeta": st.column_config.TextColumn("Tarjeta", width="small"),
+                },
+            )
 
 
 # ══════════════════════════  GMAIL CONNECT PAGE  ═════════════════════════════
