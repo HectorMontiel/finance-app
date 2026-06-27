@@ -34,6 +34,7 @@ st.set_page_config(page_title="Mis Finanzas", page_icon="💳",
 SAVINGS_TARGET  = 0.20
 _INCOME_KEY     = "_income"          # key in card_aliases for monthly income
 _INCOME_DEFAULT = 26_000.0
+_PAYDAY_KEY     = "_payday_ref"      # key for biweekly pay reference date (YYYY-MM-DD)
 
 # CARD_MAP removed — aliases are now stored per-user in finanzas.card_aliases
 CAT_LABELS = {
@@ -52,10 +53,13 @@ CAT_CLR = {
 def fmt(v: float) -> str:
     return f"${v/1_000:.1f}k" if v >= 1_000 else f"${v:.0f}"
 
-def next_payday() -> tuple[str, int]:
+def next_payday(ref_date_str: str = "2026-05-08") -> tuple[str, int]:
     today = datetime.now().date()
-    ref   = datetime(2026, 5, 8).date()
-    cycle = (today - ref).days % 14
+    try:
+        ref = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+    except Exception:
+        ref = datetime(2026, 5, 8).date()
+    cycle     = (today - ref).days % 14
     days_left = (14 - cycle) % 14 or 14
     return (today + timedelta(days=days_left)).strftime("%d/%m"), days_left
 
@@ -662,7 +666,8 @@ def pc_budget_gauge(pct: float):
 
 # ══════════════════════════  STORY ENGINE  ═══════════════════════════════════
 def story_banner(df: pd.DataFrame, total: float, avg_m: float,
-                 n_months: int, budget_pct: float, savings_m: float) -> str:
+                 n_months: int, budget_pct: float, savings_m: float,
+                 income_m: float = _INCOME_DEFAULT) -> str:
     """Return a 1–2 sentence financial health narrative."""
     month_label = df["mes"].max()
     month_str   = pd.Timestamp(month_label).strftime("%B")
@@ -793,9 +798,10 @@ def show_dashboard(user_id: str):
         st.session_state["_last_sync_msg"] = msg
         load_all.clear()
 
-    aliases        = load_card_aliases(user_id)
-    income_monthly = get_user_income(aliases)
+    aliases         = load_card_aliases(user_id)
+    income_monthly  = get_user_income(aliases)
     income_biweekly = income_monthly / 2
+    payday_ref      = aliases.get(_PAYDAY_KEY, "2026-05-08")
 
     with st.spinner(""):
         rows = load_all(user_id)
@@ -844,10 +850,27 @@ def show_dashboard(user_id: str):
             "Ingreso mensual", value=float(income_monthly),
             min_value=0.0, step=500.0, format="%.0f",
             label_visibility="collapsed", key="income_input")
-        if new_income != income_monthly:
-            if st.button("Guardar ingreso", type="primary", key="save_income"):
-                save_card_alias(user_id, _INCOME_KEY, str(int(new_income)))
-                st.success(f"✅ Ingreso actualizado: {fmt(new_income)}/mes")
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            if new_income != income_monthly:
+                if st.button("Guardar ingreso", type="primary", key="save_income"):
+                    save_card_alias(user_id, _INCOME_KEY, str(int(new_income)))
+                    st.success(f"✅ Ingreso: {fmt(new_income)}/mes")
+                    load_card_aliases.clear()
+                    st.rerun()
+
+        st.markdown("<div style='height:6px'/>", unsafe_allow_html=True)
+        st.markdown("<span style='color:rgba(255,255,255,.5);font-size:.62rem;font-weight:700;"
+                    "text-transform:uppercase;letter-spacing:.1em;'>📅 Fecha de pago quincenal</span>",
+                    unsafe_allow_html=True)
+        st.caption("Escribe una fecha en la que hayas cobrado (cualquier quincena pasada)")
+        new_payday = st.text_input("Fecha de pago", value=payday_ref,
+                                   placeholder="YYYY-MM-DD", label_visibility="collapsed",
+                                   key="payday_input")
+        if new_payday != payday_ref and len(new_payday) == 10:
+            if st.button("Guardar fecha de pago", type="primary", key="save_payday"):
+                save_card_alias(user_id, _PAYDAY_KEY, new_payday)
+                st.success("✅ Fecha de pago actualizada")
                 load_card_aliases.clear()
                 st.rerun()
 
@@ -950,7 +973,7 @@ def show_dashboard(user_id: str):
     savings_rate = max(0, savings_m / income_monthly * 100)
     bar_color    = "#22C55E" if budget_pct < 65 else ("#FBBF24" if budget_pct < 85 else "#F87171")
     sav_color    = "#22C55E" if savings_rate >= SAVINGS_TARGET * 100 else "#FBBF24"
-    pay_date, pay_days = next_payday()
+    pay_date, pay_days = next_payday(payday_ref)
     cat_totals   = df.groupby("cat")["monto"].sum()
     top_cat      = cat_totals.idxmax() if len(cat_totals) else "—"
     top_cat_pct  = f"{cat_totals.max()/total*100:.0f}%" if len(cat_totals) and total else "—"
@@ -1076,7 +1099,7 @@ def show_dashboard(user_id: str):
     # ──────────────────────────────────────────────────────────────────────── #
     # ROW 3 · Story banner + Insights (compact horizontal, BELOW charts)       #
     # ──────────────────────────────────────────────────────────────────────── #
-    story = story_banner(df, total, avg_m, n_months, budget_pct, savings_m)
+    story = story_banner(df, total, avg_m, n_months, budget_pct, savings_m, income_m=income_monthly)
     st.markdown(f'<div class="story-banner">{story}</div>', unsafe_allow_html=True)
 
     insights = compute_insights(df, df_prev, income_m=income_monthly)
