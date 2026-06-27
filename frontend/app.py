@@ -299,13 +299,25 @@ def sync_user_data(user_id: str) -> str:
     _os3.environ["LOG_LEVEL"] = "WARNING"
     try:
         from uuid import UUID
+        import sys
+
+        # Reload modules in dependency order so new code takes effect
+        reload_order = [
+            "ingestion.connectors.parsers.santander_parser",
+            "ingestion.connectors.gmail_connector",
+            "ingestion.connectors.mercadopago_connector",
+            "ingestion.base_connector",
+            "ingestion.pipeline",
+        ]
+        for mod in reload_order:
+            if mod in sys.modules:
+                importlib.reload(sys.modules[mod])
+
         import ingestion.pipeline as _pip
-        importlib.reload(_pip)
         days_back = _calc_days_back(user_id)
         results = _pip.run_pipeline(UUID(user_id), days_back=days_back)
         total = sum(results.values())
-        detail = " · ".join(f"{s}: {n}" for s, n in results.items() if n)
-        return f"✅ {total} nuevas (últimos {days_back}d buscados)" if total else f"✅ Al día (últimos {days_back}d)"
+        return f"✅ {total} nuevas (últimos {days_back}d)" if total else f"✅ Al día (últimos {days_back}d)"
     except Exception as exc:
         return f"⚠️ {str(exc)[:120]}"
 
