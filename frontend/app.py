@@ -863,16 +863,25 @@ def show_dashboard(user_id: str):
         st.markdown("<span style='color:rgba(255,255,255,.5);font-size:.62rem;font-weight:700;"
                     "text-transform:uppercase;letter-spacing:.1em;'>📅 Fecha de pago quincenal</span>",
                     unsafe_allow_html=True)
-        st.caption("Escribe una fecha en la que hayas cobrado (cualquier quincena pasada)")
-        new_payday = st.text_input("Fecha de pago", value=payday_ref,
-                                   placeholder="YYYY-MM-DD", label_visibility="collapsed",
-                                   key="payday_input")
-        if new_payday != payday_ref and len(new_payday) == 10:
-            if st.button("Guardar fecha de pago", type="primary", key="save_payday"):
-                save_card_alias(user_id, _PAYDAY_KEY, new_payday)
-                st.success("✅ Fecha de pago actualizada")
-                load_card_aliases.clear()
-                st.rerun()
+        st.caption("Escribe una fecha en que hayas cobrado (cualquier quincena pasada)")
+        # Display stored date as DD/MM/YYYY for the user
+        try:
+            payday_display = datetime.strptime(payday_ref, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            payday_display = "08/05/2026"
+        new_payday_raw = st.text_input("Fecha de pago", value=payday_display,
+                                       placeholder="dd/mm/aaaa", label_visibility="collapsed",
+                                       key="payday_input")
+        if new_payday_raw != payday_display and len(new_payday_raw) == 10:
+            try:
+                new_payday_iso = datetime.strptime(new_payday_raw, "%d/%m/%Y").strftime("%Y-%m-%d")
+                if st.button("Guardar fecha de pago", type="primary", key="save_payday"):
+                    save_card_alias(user_id, _PAYDAY_KEY, new_payday_iso)
+                    st.success("✅ Fecha de pago actualizada")
+                    load_card_aliases.clear()
+                    st.rerun()
+            except ValueError:
+                st.caption("⚠️ Formato inválido — usa dd/mm/aaaa")
 
         st.markdown("<div style='height:10px'/>", unsafe_allow_html=True)
         st.markdown("<span style='color:rgba(255,255,255,.5);font-size:.62rem;font-weight:700;"
