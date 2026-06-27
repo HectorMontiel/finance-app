@@ -269,6 +269,28 @@ def _exchange_gmail_code(code: str, client_id: str,
     r.raise_for_status()
     return r.json()
 
+def sync_user_data(user_id: str) -> str:
+    """Run ingestion pipeline for the current user directly from Streamlit."""
+    import os as _os3, importlib
+    for k in ["SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY","SUPABASE_ANON_KEY",
+              "ENCRYPTION_KEY","GMAIL_CLIENT_ID","GMAIL_CLIENT_SECRET"]:
+        _os3.environ[k] = st.secrets.get(k, "")
+    _os3.environ.setdefault("SUPABASE_JWT_SECRET", "")
+    _os3.environ["FINANCE_USER_ID"] = user_id
+    _os3.environ["APP_ENV"]  = "production"
+    _os3.environ["LOG_LEVEL"] = "WARNING"
+    try:
+        from uuid import UUID
+        import ingestion.pipeline as _pip
+        importlib.reload(_pip)
+        results = _pip.run_pipeline(UUID(user_id))
+        total = sum(results.values())
+        detail = " · ".join(f"{s}: {n}" for s, n in results.items() if n)
+        return f"✅ {total} transacciones nuevas" + (f" ({detail})" if detail else "")
+    except Exception as exc:
+        return f"⚠️ {str(exc)[:120]}"
+
+
 def _check_gmail_connected(user_id: str) -> bool:
     try:
         client = create_client(st.secrets["SUPABASE_URL"],
@@ -725,10 +747,13 @@ def show_dashboard(user_id: str):
     if "click_ver" not in st.session_state:
         st.session_state["click_ver"] = 0
 
-    # ── Fresh load on first visit of each session ── #
+    # ── Auto-sync on first visit of each session ── #
     if not st.session_state.get("_data_loaded"):
-        load_all.clear()
+        with st.spinner("🔄 Sincronizando correos..."):
+            msg = sync_user_data(user_id)
         st.session_state["_data_loaded"] = True
+        st.session_state["_last_sync_msg"] = msg
+        load_all.clear()
 
     aliases = load_card_aliases(user_id)
 
@@ -751,7 +776,10 @@ def show_dashboard(user_id: str):
             f"Inteligencia financiera · {datetime.now().strftime('%d %b %Y')}</p>",
             unsafe_allow_html=True)
     with hb:
-        if st.button("↺", type="secondary", use_container_width=True, help="Actualizar datos"):
+        if st.button("↺", type="secondary", use_container_width=True, help="Sincronizar correos"):
+            with st.spinner("🔄 Sincronizando..."):
+                msg = sync_user_data(user_id)
+            st.session_state["_last_sync_msg"] = msg
             load_all.clear()
             st.rerun()
     with hc:
@@ -866,6 +894,14 @@ def show_dashboard(user_id: str):
     cat_totals   = df.groupby("cat")["monto"].sum()
     top_cat      = cat_totals.idxmax() if len(cat_totals) else "—"
     top_cat_pct  = f"{cat_totals.max()/total*100:.0f}%" if len(cat_totals) and total else "—"
+
+    # ── Last sync result ── #
+    if st.session_state.get("_last_sync_msg"):
+        msg = st.session_state.pop("_last_sync_msg")
+        if "✅" in msg:
+            st.toast(msg, icon="✅")
+        elif "⚠️" in msg:
+            st.toast(msg, icon="⚠️")
 
     # ── Active chart-filter chip ── #
     hcat = st.session_state["chart_cat"]
