@@ -22,14 +22,15 @@ from ingestion.connectors.mercadopago_connector import MercadoPagoConnector
 _logger = get_logger(__name__)
 
 
-def build_connectors(vault: TokenVault, user_id: UUID) -> list[BaseConnector]:
+def build_connectors(vault: TokenVault, user_id: UUID,
+                     days_back: int = 180) -> list[BaseConnector]:
     return [
-        GmailConnector(vault=vault, user_id=user_id),
+        GmailConnector(vault=vault, user_id=user_id, days_back=days_back),
         MercadoPagoConnector(vault=vault, user_id=user_id),
     ]
 
 
-def run_pipeline(user_id: UUID) -> dict[str, int]:
+def run_pipeline(user_id: UUID, days_back: int = 180) -> dict[str, int]:
     settings = get_settings()
     configure_logging(settings.log_level)
 
@@ -37,7 +38,7 @@ def run_pipeline(user_id: UUID) -> dict[str, int]:
     encryption = EncryptionService.from_env()
     vault = TokenVault(db=db, encryption=encryption)
     service = TransactionService(TransactionRepository(db))
-    connectors = build_connectors(vault, user_id)
+    connectors = build_connectors(vault, user_id, days_back=days_back)
 
     results: dict[str, int] = {}
 

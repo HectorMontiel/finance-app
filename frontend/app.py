@@ -269,6 +269,24 @@ def _exchange_gmail_code(code: str, client_id: str,
     r.raise_for_status()
     return r.json()
 
+def _calc_days_back(user_id: str) -> int:
+    """Calculate how many days to look back based on latest transaction in DB."""
+    try:
+        client = create_client(st.secrets["SUPABASE_URL"],
+                               st.secrets["SUPABASE_SERVICE_ROLE_KEY"])
+        r = (client.schema("finanzas").table("transacciones")
+             .select("fecha").eq("user_id", user_id)
+             .order("fecha", desc=True).limit(1).execute())
+        if r.data:
+            from datetime import timezone
+            last = pd.to_datetime(r.data[0]["fecha"], utc=True)
+            days = (datetime.now(tz=timezone.utc) - last).days
+            return max(3, days + 3)   # buffer of 3 days
+    except Exception:
+        pass
+    return 180   # first sync or error → full history
+
+
 def sync_user_data(user_id: str) -> str:
     """Run ingestion pipeline for the current user directly from Streamlit."""
     import os as _os3, importlib
@@ -283,10 +301,11 @@ def sync_user_data(user_id: str) -> str:
         from uuid import UUID
         import ingestion.pipeline as _pip
         importlib.reload(_pip)
-        results = _pip.run_pipeline(UUID(user_id))
+        days_back = _calc_days_back(user_id)
+        results = _pip.run_pipeline(UUID(user_id), days_back=days_back)
         total = sum(results.values())
         detail = " · ".join(f"{s}: {n}" for s, n in results.items() if n)
-        return f"✅ {total} transacciones nuevas" + (f" ({detail})" if detail else "")
+        return f"✅ {total} nuevas (últimos {days_back}d buscados)" if total else f"✅ Al día (últimos {days_back}d)"
     except Exception as exc:
         return f"⚠️ {str(exc)[:120]}"
 

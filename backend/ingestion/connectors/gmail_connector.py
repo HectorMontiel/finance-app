@@ -28,20 +28,26 @@ from ingestion.connectors.parsers.santander_parser import SantanderEmailParser
 _logger = get_logger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-_SANTANDER_QUERY = (
-    'from:santander newer_than:180d '
+_SUBJECT_FILTER = (
     '(subject:"Pago/Compra" OR subject:"Tu compra ha sido registrada" '
     'OR subject:"Autorización por encima del límite")'
 )
 _VAULT_SERVICE_KEY = "gmail_oauth2"
+_DEFAULT_DAYS_BACK = 180
+
+
+def _build_query(days_back: int) -> str:
+    return f'from:santander newer_than:{days_back}d {_SUBJECT_FILTER}'
 
 
 class GmailConnector(BaseConnector):
     """Fetches Santander emails. Tokens never touch disk in production."""
 
-    def __init__(self, vault: TokenVault, user_id: UUID) -> None:
+    def __init__(self, vault: TokenVault, user_id: UUID,
+                 days_back: int = _DEFAULT_DAYS_BACK) -> None:
         self._vault = vault
         self._user_id = user_id
+        self._days_back = days_back
         self._parser = SantanderEmailParser()
 
     @property
@@ -50,8 +56,9 @@ class GmailConnector(BaseConnector):
 
     def fetch(self) -> list[TransactionCreate]:
         service = self._build_service()
-        messages = self._search_messages(service, _SANTANDER_QUERY)
-        _logger.info("gmail_messages_found", count=len(messages))
+        query = _build_query(self._days_back)
+        messages = self._search_messages(service, query)
+        _logger.info("gmail_messages_found", count=len(messages), days_back=self._days_back)
 
         transactions = []
         for stub in messages:
