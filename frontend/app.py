@@ -31,9 +31,9 @@ st.set_page_config(page_title="Mis Finanzas", page_icon="💳",
                    layout="wide", initial_sidebar_state="collapsed")
 
 # ══════════════════════════  CONSTANTS  ══════════════════════════════════════
-INCOME_BIWEEKLY = 13_000
-INCOME_MONTHLY  = INCOME_BIWEEKLY * 2          # 26 000 MXN
 SAVINGS_TARGET  = 0.20
+_INCOME_KEY     = "_income"          # key in card_aliases for monthly income
+_INCOME_DEFAULT = 26_000.0
 
 # CARD_MAP removed — aliases are now stored per-user in finanzas.card_aliases
 CAT_LABELS = {
@@ -410,6 +410,13 @@ def card_display_name(last4: str, aliases: dict) -> str:
     """Return alias if set, else ****last4."""
     return aliases.get(last4, f"****{last4}")
 
+def get_user_income(aliases: dict) -> float:
+    """Return user's monthly income from aliases dict (default 26,000)."""
+    try:
+        return float(aliases.get(_INCOME_KEY, _INCOME_DEFAULT))
+    except (ValueError, TypeError):
+        return _INCOME_DEFAULT
+
 
 # ══════════════════════════  DATA  ═══════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
@@ -680,13 +687,13 @@ def story_banner(df: pd.DataFrame, total: float, avg_m: float,
     else:
         verdict = (f"🔴 <strong>Alerta de presupuesto</strong> — gastaste el "
                    f"<strong>{budget_pct:.0f}%</strong> de tu ingreso mensual.")
-        tip     = (f"Con {fmt(avg_m)}/mes de gasto vs {fmt(INCOME_MONTHLY)} de ingreso "
+        tip     = (f"Con {fmt(avg_m)}/mes de gasto vs {fmt(income_m)} de ingreso "
                    f"solo ahorras {fmt(max(savings_m,0))}. <strong>{top_cat}</strong> es tu mayor rubro.")
 
     return f"{scope}: {verdict} {tip}"
 
 
-def compute_insights(df, df_prev, income_m=INCOME_MONTHLY):
+def compute_insights(df, df_prev, income_m=_INCOME_DEFAULT):
     out      = []
     total    = df["monto"].sum()
     n_months = max(df["mes"].nunique(), 1)
@@ -786,7 +793,9 @@ def show_dashboard(user_id: str):
         st.session_state["_last_sync_msg"] = msg
         load_all.clear()
 
-    aliases = load_card_aliases(user_id)
+    aliases        = load_card_aliases(user_id)
+    income_monthly = get_user_income(aliases)
+    income_biweekly = income_monthly / 2
 
     with st.spinner(""):
         rows = load_all(user_id)
@@ -818,14 +827,34 @@ def show_dashboard(user_id: str):
             _clear_session_cookies()
             st.session_state.clear(); st.rerun()
 
-    # ── Card alias manager ── #
+    # ── Income + Card alias manager ── #
     card_endings = sorted(df_all["tarjeta"].dropna().unique())
     has_mp = (df_all.get("fuente", pd.Series()) == "mercado_pago").any() if "fuente" in df_all.columns else False
-    with st.expander("💳 Mis tarjetas — renombrar", expanded=False):
+    with st.expander("⚙️ Mi perfil — ingreso y tarjetas", expanded=False):
         st.markdown(
             "<p style='color:rgba(255,255,255,.4);font-size:.72rem;margin:0 0 10px;'>"
-            "Los nombres que pongas aquí se guardan en tu perfil y se usan en todas las gráficas.</p>",
+            "Todo se guarda en tu perfil y se aplica en todo el dashboard.</p>",
             unsafe_allow_html=True)
+
+        # ── Ingreso mensual ── #
+        st.markdown("<span style='color:rgba(255,255,255,.5);font-size:.62rem;font-weight:700;"
+                    "text-transform:uppercase;letter-spacing:.1em;'>💵 Ingreso mensual (MXN)</span>",
+                    unsafe_allow_html=True)
+        new_income = st.number_input(
+            "Ingreso mensual", value=float(income_monthly),
+            min_value=0.0, step=500.0, format="%.0f",
+            label_visibility="collapsed", key="income_input")
+        if new_income != income_monthly:
+            if st.button("Guardar ingreso", type="primary", key="save_income"):
+                save_card_alias(user_id, _INCOME_KEY, str(int(new_income)))
+                st.success(f"✅ Ingreso actualizado: {fmt(new_income)}/mes")
+                load_card_aliases.clear()
+                st.rerun()
+
+        st.markdown("<div style='height:10px'/>", unsafe_allow_html=True)
+        st.markdown("<span style='color:rgba(255,255,255,.5);font-size:.62rem;font-weight:700;"
+                    "text-transform:uppercase;letter-spacing:.1em;'>💳 Nombres de tarjetas</span>",
+                    unsafe_allow_html=True)
         pending = {}
         cols_per_row = 3
         all_keys = list(card_endings) + (["mp"] if has_mp else [])
@@ -916,9 +945,9 @@ def show_dashboard(user_id: str):
     prev_t       = df_prev["monto"].sum() if len(df_prev) else 0
     dpct         = (total - prev_t) / prev_t * 100 if prev_t else 0
     days         = max((df["fecha"].max() - df["fecha"].min()).days, 1)
-    budget_pct   = avg_m / INCOME_MONTHLY * 100
-    savings_m    = INCOME_MONTHLY - avg_m
-    savings_rate = max(0, savings_m / INCOME_MONTHLY * 100)
+    budget_pct   = avg_m / income_monthly * 100
+    savings_m    = income_monthly - avg_m
+    savings_rate = max(0, savings_m / income_monthly * 100)
     bar_color    = "#22C55E" if budget_pct < 65 else ("#FBBF24" if budget_pct < 85 else "#F87171")
     sav_color    = "#22C55E" if savings_rate >= SAVINGS_TARGET * 100 else "#FBBF24"
     pay_date, pay_days = next_payday()
@@ -967,7 +996,7 @@ def show_dashboard(user_id: str):
         ("💚 AHORRO",      fmt(savings_m),
          f"tasa {savings_rate:.0f}% · meta 20%", "nt", sav_color),
         ("📅 PRÓX. PAGO",  f"{pay_days}d",
-         f"jue {pay_date} · {fmt(INCOME_BIWEEKLY)}", "nt", "#67E8F9"),
+         f"jue {pay_date} · {fmt(income_biweekly)}", "nt", "#67E8F9"),
     ]
     for col, (lbl, val, sub, cls, ac) in zip(k, kpis):
         is_text = not val.replace("$","").replace("k","").replace(".","").replace(",","").isdigit()
@@ -984,10 +1013,10 @@ def show_dashboard(user_id: str):
         f'<div class="bstrip">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
         f'<span style="color:rgba(255,255,255,.32);font-size:.58rem;font-weight:700;'
-        f'text-transform:uppercase;letter-spacing:.1em;">💵 Presupuesto mensual · Ingreso {fmt(INCOME_MONTHLY)}</span>'
+        f'text-transform:uppercase;letter-spacing:.1em;">💵 Presupuesto mensual · Ingreso {fmt(income_monthly)}</span>'
         f'<span style="color:{bar_color};font-size:.68rem;font-weight:700;">'
         f'{fmt(avg_m)} gastado ({budget_pct:.0f}%)'
-        f'<span style="color:rgba(255,255,255,.28);font-weight:400;"> · Restante: {fmt(max(INCOME_MONTHLY-avg_m,0))}'
+        f'<span style="color:rgba(255,255,255,.28);font-weight:400;"> · Restante: {fmt(max(income_monthly-avg_m,0))}'
         f'</span></span></div>'
         f'<div class="bbar-wrap"><div class="bbar-fill" '
         f'style="width:{min(budget_pct,100):.0f}%;background:{bar_color};"></div></div>'
@@ -1050,7 +1079,7 @@ def show_dashboard(user_id: str):
     story = story_banner(df, total, avg_m, n_months, budget_pct, savings_m)
     st.markdown(f'<div class="story-banner">{story}</div>', unsafe_allow_html=True)
 
-    insights = compute_insights(df, df_prev)
+    insights = compute_insights(df, df_prev, income_m=income_monthly)
     st.markdown('<span class="sl">💡 Insights · Acciones recomendadas</span>',
                 unsafe_allow_html=True)
     ins_cols = st.columns(len(insights), gap="small")
