@@ -1,6 +1,6 @@
 // Mis Finanzas — funciona sin red con lo último que bajó.
-const V = 'mf-2';
-const BASE = ['./', 'index.html', 'app.css?v=2', 'app.js?v=2', 'vendor/qrcode.js?v=2', 'icono.svg', 'icono-180.png', 'manifest.webmanifest'];
+const V = 'mf-3';
+const BASE = ['./', 'index.html', 'app.css?v=3', 'app.js?v=3', 'vendor/qrcode.js?v=3', 'icono.svg', 'icono-180.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(V).then((c) => c.addAll(BASE)).then(() => self.skipWaiting()));

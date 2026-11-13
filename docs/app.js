@@ -1083,9 +1083,12 @@ function pantallaBloqueo(error) {
     <img class="logo" src="icono.svg" alt="">
     <h1>Mis Finanzas</h1>
     <p>Tus gastos de Santander, claros y en un solo lugar. Es privada: tus datos viajan cifrados y sólo se abren con tu código de acceso.</p>
-    <ol class="pasos"><li><span>En un dispositivo donde ya esté abierta, ve a <b>Ajustes → Abrir en otro dispositivo</b> y escanea el QR.</span></li>
-      <li><span>O pega aquí tu código de acceso.</span></li></ol>
-    <label class="campo"><span>Código de acceso</span><input id="codigo" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="43 caracteres"></label>
+    <ol class="pasos"><li><span>Abre tu <b>enlace de acceso</b> (el que termina en <b>#k=…</b>) o escanea su QR: entra solo.</span></li>
+      <li><span>Si ya está abierta en otro dispositivo: <b>Ajustes → Abrir en otro dispositivo</b>.</span></li>
+      <li><span>O pega aquí el código o el enlace completo.</span></li></ol>
+    <label class="campo"><span>Código de acceso</span>
+      <span style="display:flex;gap:8px"><input id="codigo" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Código o enlace" style="flex:1;min-width:0;width:auto">
+      <button class="btn" data-acc="pegarCodigo" style="height:48px">Pegar</button></span></label>
     ${error ? `<p style="color:var(--critico);margin:-4px 0 14px">${esc(error)}</p>` : ''}
     <button class="btn primario ancho" data-acc="entrar">Entrar</button></div>`;
 }
@@ -1184,9 +1187,14 @@ const ACC = {
     location.replace(location.pathname);
   },
   entrar: async () => {
-    const v = $('#codigo').value.trim().replace(/^.*#k=/, '');
-    try { await importarClave(v); } catch { return pantallaBloqueo('Ese código no es válido.'); }
+    const v = $('#codigo').value.trim().replace(/^.*#k=/, '').replace(/\s+/g, '');
+    if (!v) { $('#codigo').focus(); return avisar('Primero pega tu código o tu enlace de acceso'); }
+    try { await importarClave(v); } catch { return pantallaBloqueo('Ese código no es válido: deben ser 43 caracteres.'); }
     guardar('mf_clave', v); location.reload();
+  },
+  pegarCodigo: async () => {
+    try { $('#codigo').value = (await navigator.clipboard.readText()).trim(); ACC.entrar(); }
+    catch { $('#codigo').focus(); avisar('Mantén presionado el campo y elige «Pegar»'); }
   },
   deshacer: () => { const f = E.deshacer; $('#aviso').hidden = true; if (f) f(); },
   manualTipo: (d, b) => {
