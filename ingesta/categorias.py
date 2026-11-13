@@ -1,0 +1,126 @@
+"""
+Categorías automáticas por nombre de comercio. La primera regla que coincide gana.
+
+Las claves son las mismas que usa la página (docs/app.js, CATEGORIAS). Lo que el
+usuario corrija en la app se guarda como regla suya y siempre gana sobre esto.
+"""
+
+import re
+
+CATEGORIAS = [
+    "super", "comida", "transporte", "suscripciones", "entretenimiento", "apuestas",
+    "salud", "servicios", "compras", "viajes", "transferencias", "efectivo", "otros",
+]
+
+_REGLAS: list[tuple[str, str]] = [
+    # Apuestas (antes de todo: NMX*NOVIBET no debe caer en otra cosa)
+    (r"NOVIBET|PLAYDOIT|CALIENTE|CODERE|BETCRIS|BET365|STRENDUS|WINPOT|BETWAY|1XBET|CASINO|YAJUEGO|JUEGAENLINEA",
+     "apuestas"),
+
+    # Transferencias
+    (r"SPEI|TRANSFERENCIA|TRASPASO|PAGO\s+INTERBANCARIO|CODI\b", "transferencias"),
+
+    # Viajes
+    (r"AIRBNB|BOOKING|EXPEDIA|HOTEL|HOSTAL|MARRIOTT|HILTON|FIESTA\s+(?:AMERICANA|INN)|CITY\s+EXPRESS|ONE\s+HOTEL",
+     "viajes"),
+    (r"AIRWAYS|AIRLINES|AEROMEXICO|VOLARIS|VIVA\s*AEROBUS|VIVAAEROBUS|AMERICAN\s+AIR|UNITED\s+AIR|DELTA\s+AIR|AEROPUERTO",
+     "viajes"),
+
+    # Suscripciones y servicios digitales
+    (r"NETFLIX|PRIME\s+VIDEO|AMAZON\s+PRIME|DISNEY|HBO|\bMAX\b|APPLE\.COM|APPLE\s+TV|ITUNES|PARAMOUNT|CRUNCHYROLL|BLIM\b|VIX\b",
+     "suscripciones"),
+    (r"SPOTIFY|DEEZER|APPLE\s+MUSIC|YOUTUBE|GOOGLE\s*\*|AMAZON\s+MUSIC", "suscripciones"),
+    (r"CLAUDE\.AI|ANTHROPIC|OPENAI|CHATGPT|COPILOT|GITHUB|CLOUDFLARE|MICROSOFT|ADOBE|CANVA|DROPBOX|ICLOUD",
+     "suscripciones"),
+    (r"TOTAL\s*PASS|OVHCLOUD|PIMEYES|\bGYM\b|GIMNASIO|SMART\s*FIT|SPORT\s*CITY|EQUINOX|ENERGY\s+FITNESS|ANYTIME\s+FIT|EMGMFIT|CROSSFIT|YOGA|PILATES",
+     "suscripciones"),
+
+    # Comida fuera: restaurantes, bares, cafés, comida rápida y a domicilio
+    (r"\bREST\b|RESTAURAN|BISTRO|BRASSERIE|CANTINA|MARISQUERIA|CEVICHERIA|TAQUER|TAQUIZA|BIRRIERIA|POZOLERIA",
+     "comida"),
+    (r"\bBAR\b|\bANTRO\b|LOUNGE|NIGHTCLUB|FAUNO|AZIA\b|POOLHOUSE|CANDYLES|MOJITOS|LUANNA|PUERTA\s*VERONA|RAKATA|TEMPO\s+CLUB",
+     "comida"),
+    (r"STARBUCKS|CAFE\b|CAFETERIA|COFFEE|CIELITO\s+QUERIDO|PUNTA\s+DEL\s+CIELO|TIM\s+HORTONS",
+     "comida"),
+    (r"VIPS\b|TOKS\b|SANBORNS|APPLEBEE|CHILIS\b|FRIDAYS\b|CALIFORNIA\s+PIZZA|OUTBACK|ITALIANNIS|WINGS|ALITAS",
+     "comida"),
+    (r"MCDONALD|MC\s*DONALDS|BURGER\s*KING|BURGUER|WENDY|SUBWAY\b|CARL.?S\s+JR|JACK\s+IN|SUPERBUR|BURGER",
+     "comida"),
+    (r"DOMINOS|PIZZA|LITTLE\s*CAESARS|PAPA\s*JOHNS|COPIZZA|CINCO\s+REBANADAS|KFC\b|POLLO\s*LOCO|CHURCH.?S",
+     "comida"),
+    (r"SUSHI|ITTO|\bDQ\b|DAIRY\s+QUEEN|NIEVE|HELADO|PALETERIA|PALETAS|FASTFOOD|FAST\s+FOOD|ASTURIANO|BENDITAS|QUACK",
+     "comida"),
+    (r"UBER\s*EATS|RAPPI|DIDI\s*FOOD|DOORDASH|SIN\s+DELANTAL|APP\s+FOODS", "comida"),
+    # Lugares frecuentes de la cuenta (bares, antros, restaurantes)
+    (r"MEZONTLE|BUNKA|CABARET|CERVEC|TRAGUITO|CULPABLE|MACA\s+DE\s+NOCHE|CASA\s+CANTO|BARBACOA|TACOS|MARISQUE|COMAL\b|CHOCOLATERIA",
+     "comida"),
+    (r"PALETER|NAHUALA|LOBOROJO|LOSROJOS|BURRERKI|SENSHI|COREANA|CASA\s+SOLEDAD|EL\s+OSO|ANTOJO|MONKEY\s+PAPAS|BOKOBA|ZIRACCO",
+     "comida"),
+
+    # Súper y despensa
+    (r"OXXO(?!\s*GAS)|SEVEN\s*ELEVEN|7[-\s]?ELEVEN|CIRCLE\s*K|EXTRA\b|KIOSKO|SUPER\s*Q\b|SUPER\s*CITY",
+     "super"),
+    (r"WAL\s*MART|BODEGA\s*AURRERA|SUPERAMA|SAM.?S|COSTCO|CHEDRAUI|SORIANA|LA\s+COMER|CITY\s+MARKET|HEB\b|FRESKO",
+     "super"),
+    (r"CASA\s+LEY|MERZA\b|ALSUPER|SMART\b|\bSUP\b|SUPERMERCADO|ABARR|MISC\b|MISCELANEA|MINISUPER|MI\s+SUPER|TIENDA\s+DE\s+LA\s+ESQ",
+     "super"),
+    (r"MERCADO\b(?!\s*LIBRE|\s*PAGO)|TIANGUIS|PANADERI|PASTELERIA|DULCERIA|FRUTAS|CARNICERIA|CARNES\b|POLLERIA|TORTILLER|CREM\b|CREMERIA|ABASO|ABASTO",
+     "super"),
+
+    # Transporte
+    (r"\bUBER\b|\bDIDI\b|CABIFY|INDRIVER|\bTAXI\b|BEAT\b", "transporte"),
+    (r"GASOL|\bGAS\s+(?!NATURAL|LP\b)\w+|SERVICIO\s+(?:FGS|PONIENTE)|ESTACION\s+DE\s+SERVICIO|WAX\b|AUTOLAVADO|CAR\s*WASH",
+     "transporte"),
+    (r"PEMEX|GASOLIN|PETRO\s*7|SHELL\b|\bBP\b|HIDROSINA|OXXO\s+GAS|G500|MOBIL\b|ARCO\b|REPSOL|TOTAL\s+ENERGIES",
+     "transporte"),
+    (r"AUTOPISTA|CASETA|VIAPASS|TELEVIA|PASE\b|IAVE\b|CAPUFE|PLAZA\s+DE\s+COBRO", "transporte"),
+    (r"MUEVE\s+CIUDAD|FLECHA\s+AMARILLA|METRO\b|METROBUS|SUBURBANO|QROBUS|ADO\b|ETN\b|ESTRELLA\s+BLANCA|PRIMERA\s+PLUS|OMNIBUS|FUTURA\b",
+     "transporte"),
+    (r"PARQUIMETRO|ESTACIONAMIENTO|PARKING|PARCO|VALET|AUTOPARQUE|PARK\b", "transporte"),
+
+    # Entretenimiento
+    (r"APP\s+TICKETS|EVENTOS\b|HOLIDANCE|G2A|CINEPOLIS|CINEMEX|\bCINE\b|TICKETMASTER|SUPERBOLETOS|BOLETIA|EVENTBRITE|ETICKET|FUNTICKET|TEATRO|CONCIERTO",
+     "entretenimiento"),
+    (r"STEAM|PLAYSTATION|XBOX|NINTENDO|EPIC\s+GAMES|RIOT|BLIZZARD|BOLICHE|BOWLING|KINGPIN|ESCAPE|SIX\s+FLAGS|MUSEO|ZOO",
+     "entretenimiento"),
+
+    # Salud
+    (r"FAR\s+GUAD|PROSONRISAS|FARM|SIMILARES|DEL\s+AHORRO|F\s+AHORRO|BENAVIDES|SAN\s+PABLO|GENERICOS|HOSPITAL|CLINICA|SANATORIO|MEDIC",
+     "salud"),
+    (r"LABORATORIO|CHOPO|SALUD\s+DIGNA|OPTICA|DEVLYN|DENTAL|DENTISTA|ODONTOLOG|PSICOLOG|NUTRIOLOG|FISIOTERAPIA|\bDR\.?\s",
+     "salud"),
+
+    # Servicios fijos
+    (r"CFE\b|TELMEX|INFINITUM|MEGACABLE|TOTALPLAY|IZZI\b|AXTEL|TELCEL|AT&?T|MOVISTAR|BAIT\b|UNEFON|SKY\b",
+     "servicios"),
+    (r"GAS\s+NATURAL|NATURGAS|ZETA\s+GAS|GAS\s+LP|AGUA\b|CEA\b|SEGURO|ALLIANZ|AXA\b|METLIFE|GNP|MAPFRE|QUALITAS|HDI\b",
+     "servicios"),
+    (r"PODER\s+EJECUTIVO|GOBIERNO|TESORERIA|INMOBILIARIA|ARRENDA|CONDOMINIO|MANTENIMIENTO|UNIVERSIDAD|COLEGIO|INSTITUTO|TECNOLOGICO|ESCUELA|COLEGIATURA",
+     "servicios"),
+    (r"LAUNDRY|LAVANDERIA|TINTORERIA|PELUQUERIA|BARBER|ESTETICA|SPA\b", "servicios"),
+
+    # Compras
+    (r"AMAZON|MERCADO\s*LIBRE|MERCADOLIBRE|LIVERPOOL|PALACIO\s+DE\s+HIERRO|SEARS|SUBURBIA|COPPEL|ELEKTRA|SHEIN|TEMU|ALIEXPRESS",
+     "compras"),
+    (r"ZARA\b|H&?M\b|BERSHKA|PULL&?BEAR|STRADIVARIUS|MANGO\b|NIKE|ADIDAS|PUMA\b|INNOVASPORT|MARTI\b|FLEXI|ANDREA\b|CUIDADO\s+CON\s+EL\s+PERRO",
+     "compras"),
+    (r"HOME\s+DEPOT|IKEA|SODIMAC|FERRET|MACSTORE|IFIX|APPLE\s+STORE|ISTORE|MIXUP|BEST\s+BUY|STEREN|OFFICE\s+DEPOT|OFFICEMAX|GANDHI|SANBORN",
+     "compras"),
+    (r"OVG\s+EDC|MASCOTA|MINISO|TIKTOK|PAYPAL|FLORERIA|PERFUME|AUTOZONE|REFACC|GLOBOS|BALAUSTRADA|CASHI", "compras"),
+]
+
+_COMPILADAS = [(re.compile(p, re.IGNORECASE), cat) for p, cat in _REGLAS]
+
+
+def categorizar(comercio: str, tipo: str = "compra") -> str:
+    """Categoría automática. Transferencias y retiros tienen la suya por tipo."""
+    if tipo == "transferencia":
+        return "transferencias"
+    if tipo == "retiro":
+        return "efectivo"
+    if tipo == "deposito":
+        return "ingreso"
+    for patron, cat in _COMPILADAS:
+        if patron.search(comercio or ""):
+            return cat
+    return "otros"
