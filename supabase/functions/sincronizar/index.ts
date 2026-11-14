@@ -156,34 +156,50 @@ ${lista}`;
   } catch { return null; }
 }
 
-/** Manda a la IA, en tandas, las claves que aún no ha visto. Devuelve cuántas clasificó. */
+/* Gemini se comparte con SharPicks: tope diario de llamadas para Mis Finanzas (IA_TOPE_DIA, 6 por defecto). */
+const TOPE_DIA = Number(Deno.env.get("IA_TOPE_DIA") || 6);
+async function reservarLlamada(comercios: number): Promise<boolean> {
+  const dia = new Date().toISOString().slice(0, 10);
+  const { data } = await sb.from("ia_uso").select("llamadas,comercios").eq("dia", dia).maybeSingle();
+  if ((data?.llamadas || 0) >= TOPE_DIA) return false;
+  await sb.from("ia_uso").upsert({ dia, llamadas: (data?.llamadas || 0) + 1, comercios: (data?.comercios || 0) + comercios });
+  return true;
+}
+
+/** Sin IA: el comercio entra al diccionario con la regla y la IA lo ve en la pasada nocturna. */
+async function guardarComoRegla(pendientes: { clave: string; ejemplo: string; pista: string }[]) {
+  if (!pendientes.length) return;
+  await sb.from("diccionario").upsert(pendientes.map((p) => ({ clave: p.clave, cat: p.pista, fuente: "regla", ia: false, ejemplo: p.ejemplo, esencial: ESENCIAL_POR_DEFECTO[p.pista] ?? null })), { onConflict: "clave", ignoreDuplicates: true });
+}
+
+/** Manda a la IA, en tandas de 80, lo que aún no ha visto, sin pasar el tope del día. Devuelve cuántas clasificó. */
 async function pasarPorIA(pendientes: { clave: string; ejemplo: string; pista: string }[], maxLlamadas: number): Promise<number> {
   let hechas = 0;
-  for (let i = 0, llamadas = 0; i < pendientes.length && llamadas < maxLlamadas; i += 80, llamadas++) {
+  for (let i = 0, llamadas = 0; i < pendientes.length; i += 80, llamadas++) {
     const lote = pendientes.slice(i, i + 80);
+    if (llamadas >= maxLlamadas || !(await reservarLlamada(lote.length))) { await guardarComoRegla(pendientes.slice(i)); break; }
     let r = await clasificarConIA(lote);
-    if (!r) { await espera(12000); r = await clasificarConIA(lote); } // límite por minuto del plan gratis
+    if (!r && (await reservarLlamada(0))) { await espera(12000); r = await clasificarConIA(lote); } // límite por minuto
     const filas = lote.map((p) => {
       const c = r?.[p.clave];
       return c
         ? { clave: p.clave, cat: c.cat, sub: c.sub ?? null, esencial: c.esencial ?? null, nombre: c.nombre ?? null, confianza: c.confianza ?? null, fuente: "ia", ia: true, ejemplo: p.ejemplo }
         : { clave: p.clave, cat: p.pista, fuente: "regla", ia: false, ejemplo: p.ejemplo, esencial: ESENCIAL_POR_DEFECTO[p.pista] ?? null };
     });
-    // Los que la IA no devolvió suman un intento (se reintentan de noche, máximo 3 veces)
     const { data: previos } = await sb.from("diccionario").select("clave,intentos").in("clave", lote.map((p) => p.clave));
     const intentos = Object.fromEntries((previos || []).map((x) => [x.clave, x.intentos]));
     await sb.from("diccionario").upsert(filas.map((f) => (f.ia ? f : { ...f, intentos: (intentos[f.clave] || 0) + 1 })), { onConflict: "clave" });
     hechas += filas.filter((f) => f.ia).length;
-    if (!r) break; // la IA no responde: no insistir en esta pasada
+    if (!r) { await guardarComoRegla(pendientes.slice(i + 80)); break; }
   }
   return hechas;
 }
 
-/** Pasada nocturna: claves que la IA no pudo ver (máx. 3 intentos, 4 llamadas por noche). */
+/** Pasada nocturna (una vez al día): lo que quedó con regla. Máx. 3 llamadas y 3 intentos por comercio. */
 async function repasoNocturno() {
-  const { data } = await sb.from("diccionario").select("clave,ejemplo,cat").eq("ia", false).lt("intentos", 3).limit(320);
+  const { data } = await sb.from("diccionario").select("clave,ejemplo,cat").eq("ia", false).lt("intentos", 3).limit(240);
   if (!data?.length) return 0;
-  return pasarPorIA(data.map((d) => ({ clave: d.clave, ejemplo: d.ejemplo || d.clave.slice(2), pista: d.cat })), 4);
+  return pasarPorIA(data.map((d) => ({ clave: d.clave, ejemplo: d.ejemplo || d.clave.slice(2), pista: d.cat })), 3);
 }
 
 /* ── Un usuario ─────────────────────────────────────────────────────────── */
@@ -252,11 +268,16 @@ async function sincronizarUsuario(uid: string, lote: number) {
   return { nuevos: guardar.length, pendientes, revisados: correos.length, total_correos: ids.length };
 }
 
-/** Comercios del usuario que aún no están en el diccionario: se clasifican juntos, en tandas de 80. */
-async function clasificarUsuario(uid: string, maxLlamadas: number) {
-  const movs: { clave: string; c: string; tipo: string }[] = [];
+/**
+ * Comercios del usuario que aún no están en el diccionario (que es compartido: lo que ya vio
+ * la IA para alguien sirve para todos y no cuesta nada).
+ * - Primera carga de un usuario: la IA los ve ya, en tandas de 80 (la app repite hasta terminar).
+ * - Después: entran con la regla al momento y la IA los ve en la pasada nocturna.
+ */
+async function clasificarUsuario(uid: string) {
+  const movs: { clave: string; c: string }[] = [];
   for (let desde = 0; ; desde += 1000) {
-    const { data } = await sb.from("movimientos").select("clave,c,tipo").eq("user_id", uid).eq("tipo", "compra").range(desde, desde + 999);
+    const { data } = await sb.from("movimientos").select("clave,c").eq("user_id", uid).eq("tipo", "compra").range(desde, desde + 999);
     movs.push(...(data || []));
     if (!data || data.length < 1000) break;
   }
@@ -269,8 +290,15 @@ async function clasificarUsuario(uid: string, maxLlamadas: number) {
     for (const d of data || []) ya.add(d.clave);
   }
   const nuevas = claves.filter((k) => !ya.has(k)).map((k) => ({ clave: k, ejemplo: unicas.get(k)!, pista: categorizarRegla(unicas.get(k)!) }));
-  const hechas = nuevas.length ? await pasarPorIA(nuevas, maxLlamadas) : 0;
-  return { clasificados: hechas, restantes: Math.max(0, nuevas.length - Math.min(nuevas.length, maxLlamadas * 80)) };
+  const { data: perfil } = await sb.from("perfiles").select("ia_inicial").eq("user_id", uid).maybeSingle();
+  if (perfil?.ia_inicial) {
+    await guardarComoRegla(nuevas);
+    return { clasificados: 0, de_noche: nuevas.length, restantes: 0 };
+  }
+  const hechas = nuevas.length ? await pasarPorIA(nuevas.slice(0, 160), 2) : 0;
+  const restantes = Math.max(0, nuevas.length - 160);
+  if (!restantes || !hechas) await sb.from("perfiles").update({ ia_inicial: true }).eq("user_id", uid);
+  return { clasificados: hechas, restantes: hechas ? restantes : 0, de_noche: hechas ? 0 : nuevas.length };
 }
 
 Deno.serve(async (req) => {
@@ -286,7 +314,7 @@ Deno.serve(async (req) => {
         if (Date.now() - t0 > 100_000) break;
         try {
           const r = await sincronizarUsuario(u.user_id, 60);
-          if (!r.error && r.nuevos) await clasificarUsuario(u.user_id, 1); // sólo si llegó algo nuevo
+          if (!r.error && r.nuevos) await clasificarUsuario(u.user_id); // sin IA: queda para la noche
           hechos.push(r);
         } catch (e) { hechos.push({ error: String(e) }); }
       }
@@ -298,7 +326,7 @@ Deno.serve(async (req) => {
     const { data: u } = await sb.auth.getUser(jwt);
     if (!u?.user) return json({ error: "Inicia sesión" }, 401);
     const { accion } = await req.json().catch(() => ({}));
-    if (accion === "clasificar") return json(await clasificarUsuario(u.user.id, 2));
+    if (accion === "clasificar") return json(await clasificarUsuario(u.user.id));
     return json(await sincronizarUsuario(u.user.id, 100));
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 500);

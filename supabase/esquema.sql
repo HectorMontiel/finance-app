@@ -88,3 +88,13 @@ alter table public.diccionario add column if not exists nombre text;        -- n
 alter table public.diccionario add column if not exists confianza real;     -- 0..1 según la IA
 alter table public.diccionario add column if not exists ia boolean not null default false; -- ya lo vio la IA
 alter table public.diccionario add column if not exists intentos int not null default 0;
+
+-- v4: Gemini se reserva para SharPicks. Tope diario de llamadas y registro de uso.
+create table if not exists public.ia_uso (
+  dia date primary key,
+  llamadas int not null default 0,
+  comercios int not null default 0
+);
+alter table public.ia_uso enable row level security;
+revoke all on public.ia_uso from anon, authenticated;
+alter table public.perfiles add column if not exists ia_inicial boolean not null default false;
