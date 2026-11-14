@@ -56,3 +56,8 @@ desktop.ini
 CLAVE_APP.txt
 *.token.json
 ACCESO_PRIVADO.html
+SUPABASE_DB_PASS.txt
+SUPABASE_REF.txt
+SUPABASE_SERVICE.txt
+SUPABASE_ANON.txt
+CRON_SECRET.txt

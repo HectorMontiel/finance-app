@@ -368,3 +368,5 @@ details.tabla td:last-child, details.tabla th:last-child { text-align: right; fo
   .cats { grid-template-columns: repeat(3, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+.gira { animation: girar 1s linear infinite; }
+.btn svg { width: 20px; height: 20px; }

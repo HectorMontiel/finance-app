@@ -2,9 +2,7 @@
    (docs/datos/finanzas.enc, AES-256-GCM) y se abren aquí con tu código. */
 'use strict';
 
-const REPO = 'HectorMontiel/finance-app';
-const WORKFLOW = 'sincronizar.yml';
-const VERSION = '2.0';
+const VERSION = '3.0';
 
 /* ── Categorías ─────────────────────────────────────────────────────────── */
 const CATS = {
@@ -81,47 +79,53 @@ function normComercio(c) {
   return s || String(c || '').toUpperCase();
 }
 
-/* ── Cifrado (mismo formato que ingesta/cifrado.py) ─────────────────────── */
-const MAGIA = new TextEncoder().encode('MF1');
-const b64aBytes = (s) => { s = s.trim().replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); };
-const bytesAB64 = (u) => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+/* ── Conexión (Supabase + Google) ───────────────────────────────────────── */
+const SUPA_URL = 'https://otxgrrczeznexxobamtv.supabase.co';
+const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im90eGdycmN6ZXpuZXh4b2JhbXR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2MTk4NTIsImV4cCI6MjExMDE5NTg1Mn0.eVS16h-Wc4TwSTWzw3CiWxmMFC0l9jJc2hz1gwC3YEw'; // llave pública: sólo deja ver lo propio de cada quien (RLS)
+const GOOGLE_ID = '108907084207-glbo6rn9s87ktmlm5oe9knjan0n66d9i.apps.googleusercontent.com';
+const ALCANCES = 'openid email profile https://www.googleapis.com/auth/gmail.readonly';
+const URL_APP = location.origin + location.pathname;
+const sb = window.supabase.createClient(SUPA_URL, SUPA_ANON, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: 'mf_sesion' },
+});
 
-async function importarClave(txt) {
-  const raw = b64aBytes(txt);
-  if (raw.length !== 32) throw new Error('clave');
-  return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+async function llamar(fn, body = {}) {
+  const { data: { session } } = await sb.auth.getSession();
+  const r = await fetch(`${SUPA_URL}/functions/v1/${fn}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SUPA_ANON, Authorization: `Bearer ${session ? session.access_token : SUPA_ANON}` },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
+  return j;
 }
-async function descifrar(buf, clave) {
-  const u = new Uint8Array(buf);
-  if (u[0] !== 77 || u[1] !== 70 || u[2] !== 49) throw new Error('formato');
-  const plano = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: u.slice(3, 15), additionalData: MAGIA }, clave, u.slice(15));
-  const flujo = new Blob([plano]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return JSON.parse(await new Response(flujo).text());
-}
-async function cifrar(obj, clave) {
-  const flujo = new Blob([JSON.stringify(obj)]).stream().pipeThrough(new CompressionStream('gzip'));
-  const plano = await new Response(flujo).arrayBuffer();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const c = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: MAGIA }, clave, plano));
-  const out = new Uint8Array(15 + c.length);
-  out.set(MAGIA, 0); out.set(iv, 3); out.set(c, 15);
+
+async function todas(tabla, columnas) {
+  const out = [];
+  for (let desde = 0; ; desde += 1000) {
+    const { data, error } = await sb.from(tabla).select(columnas).range(desde, desde + 999);
+    if (error) throw new Error(error.message);
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
   return out;
 }
 
 /* ── Estado ─────────────────────────────────────────────────────────────── */
 const E = {
-  claveTxt: null, clave: null, datos: null, aj: null, movs: [],
+  usuario: null, perfil: null, dicc: {}, datos: null, aj: null, movs: [],
   vista: 'inicio', periodoInicio: 'pago',
   f: { q: '', cat: null, tj: null, k: null, tipo: 'gastos', mes: null, todo: false, limite: 120 },
   an: { rango: '6m', mes: null },
-  ajSha: null, subiendo: null, sincronizando: false,
+  subiendo: null, sincronizando: false, progreso: null,
 };
 
 function ajustesBase() {
   return {
-    v: 1, actualizado: 0, pago_monto: 13000, frecuencia: 'catorcenal', pago_ref: '2026-06-25', pago_dia: 1,
-    meta_ahorro: 20, tarjetas: {}, nombres: {}, reglas: {}, cambios: {}, revisados: {}, manuales: [],
-    presupuestos: {}, gh_token: '', tema: 'auto',
+    v: 1, actualizado: 0, pago_monto: 0, frecuencia: 'quincenal', pago_ref: iso(hoy()), pago_dia: 1,
+    meta_ahorro: 10, tarjetas: {}, nombres: {}, reglas: {}, cambios: {}, revisados: {}, manuales: [],
+    presupuestos: {}, tema: 'auto',
   };
 }
 
@@ -129,77 +133,75 @@ function ajustesBase() {
 async function iniciar() {
   aplicarTema(leer('mf_tema') || 'auto');
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  guardar('mf_clave', null); // la versión con código ya no se usa
+  if (location.hash.includes('k=')) history.replaceState(null, '', location.pathname);
 
-  const h = new URLSearchParams(location.hash.slice(1));
-  if (h.get('k')) {
-    try { await importarClave(h.get('k')); guardar('mf_clave', h.get('k').trim()); } catch { /* código malo */ }
-    // En Safari se deja el código en la dirección para que «Agregar a inicio» lo lleve a la app.
-    if (esApp() || !esIOS()) history.replaceState(null, '', location.pathname + location.search);
+  const q = new URLSearchParams(location.search);
+  if (q.get('code') || q.get('error')) {
+    const ok = q.get('state') && q.get('state') === sessionStorage.getItem('mf_estado');
+    history.replaceState(null, '', location.pathname);
+    if (q.get('error')) return pantallaBloqueo('No se dio el permiso en Google. Puedes intentarlo otra vez.');
+    if (!ok) return pantallaBloqueo('El inicio de sesión tardó demasiado. Intenta otra vez.');
+    pintarCargando('Entrando…');
+    try {
+      const r = await llamar('entrar', { code: q.get('code'), redirect_uri: URL_APP });
+      const { error } = await sb.auth.verifyOtp({ token_hash: r.token_hash, type: 'magiclink' });
+      if (error) throw error;
+    } catch (e) { return pantallaBloqueo(e.message || 'No se pudo entrar.'); }
   }
-  const k = leer('mf_clave');
-  if (!k) return pantallaBloqueo();
-  try {
-    E.claveTxt = k;
-    E.clave = await importarClave(k);
-  } catch { guardar('mf_clave', null); return pantallaBloqueo('Ese código no es válido.'); }
+
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return pantallaBloqueo();
+  E.usuario = session.user;
   pintarEsqueleto();
-  try {
-    await cargarTodo();
-  } catch (e) {
-    if (e.name === 'OperationError' || e.message === 'formato') {
-      guardar('mf_clave', null);
-      return pantallaBloqueo('El código no abre tus datos. Revisa que sea el más reciente.');
-    }
-    return pantallaError(e);
-  }
+  try { await cargarTodo(); } catch (e) { return pantallaError(e); }
   $('#barra').hidden = false;
-  $('#fab').hidden = false;
   ir(sessionStorage.getItem('mf_vista') || 'inicio');
-  if (E.aj.gh_token && E.ajPendiente) programarSubida();
+  // Primera vez (o historial a medias): leer los correos ya, con barra de progreso.
+  if (E.perfil.gmail_conectado && (!E.perfil.historial_completo || E.perfil.sync_pendientes > 0)) sincronizarAhora(true);
+}
+
+function entrarConGoogle() {
+  const estado = Array.from(crypto.getRandomValues(new Uint32Array(3))).join('');
+  sessionStorage.setItem('mf_estado', estado);
+  const p = new URLSearchParams({
+    client_id: GOOGLE_ID, redirect_uri: URL_APP, response_type: 'code', scope: ALCANCES,
+    access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state: estado,
+  });
+  location.href = `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
 }
 
 async function cargarTodo() {
-  const r = await fetch(`datos/finanzas.enc?t=${Date.now()}`, { cache: 'no-store' });
-  if (!r.ok) throw new Error(`No se pudieron bajar los datos (${r.status}).`);
-  E.datos = await descifrar(await r.arrayBuffer(), E.clave);
-  await cargarAjustes();
+  const [perf, movs, dicc] = await Promise.all([
+    sb.from('perfiles').select('*').eq('user_id', E.usuario.id).maybeSingle(),
+    todas('movimientos', 'id,f,h,m,tipo,c,tj,clave,cat_auto,extra'),
+    todas('diccionario', 'clave,cat'),
+  ]);
+  if (perf.error) throw new Error(perf.error.message);
+  E.perfil = perf.data || { gmail_conectado: false, ajustes: {} };
+  E.dicc = Object.fromEntries(dicc.map((d) => [d.clave, d.cat]));
+  E.datos = { movs: movs.map((r) => ({ ...r, m: Number(r.m) })), generado: E.perfil.ultima_sync };
+  cargarAjustes(E.perfil.ajustes || {});
   preparar();
+  E.ultimaCarga = Date.now();
 }
 
-async function cargarAjustes() {
+function cargarAjustes(remoto) {
   let local = null;
   try { local = JSON.parse(leer('mf_aj') || 'null'); } catch { local = null; }
-  let remoto = null;
-  try {
-    const r = await fetch(`datos/ajustes.enc?t=${Date.now()}`, { cache: 'no-store' });
-    if (r.ok) remoto = await descifrar(await r.arrayBuffer(), E.clave);
-  } catch { /* sin copia publicada */ }
-  const token = (local && local.gh_token) || (remoto && remoto.gh_token);
-  if (token) {
-    try {
-      const g = await fetch(`https://api.github.com/repos/${REPO}/contents/docs/datos/ajustes.enc?ref=main`, { headers: gh(token), cache: 'no-store' });
-      if (g.ok) {
-        const j = await g.json();
-        E.ajSha = j.sha;
-        const fresco = await descifrar(b64aBytes(j.content.replace(/\n/g, '')).buffer, E.clave);
-        if (!remoto || (fresco.actualizado || 0) >= (remoto.actualizado || 0)) remoto = fresco;
-      }
-    } catch { /* sin red o token vencido: se usa lo que haya */ }
-  }
-  const elegido = !local ? remoto : !remoto ? local : ((local.actualizado || 0) >= (remoto.actualizado || 0) ? local : remoto);
-  E.ajPendiente = !!(local && remoto && (local.actualizado || 0) > (remoto.actualizado || 0));
-  E.aj = Object.assign(ajustesBase(), elegido || {});
+  if (local && local.uid !== E.usuario.id) local = null; // otra cuenta en este dispositivo
+  const elegido = !local ? remoto : ((local.actualizado || 0) > (remoto.actualizado || 0) ? local : remoto);
+  E.aj = Object.assign(ajustesBase(), elegido || {}, { uid: E.usuario.id });
+  delete E.aj.gh_token;
   guardar('mf_aj', JSON.stringify(E.aj));
   guardar('mf_tema', E.aj.tema);
   aplicarTema(E.aj.tema);
-}
-
-function gh(token) {
-  return { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  if (local && elegido === local) programarSubida();
 }
 
 /* ── Movimientos con las correcciones del usuario ───────────────────────── */
 function claveDe(m) {
+  if (m.clave) return m.clave;
   if (m.tipo === 'transferencia') return 'T:' + m.c;
   if (m.tipo === 'deposito') return 'E:' + m.c;
   if (m.tipo === 'retiro') return 'R:';
@@ -212,13 +214,19 @@ function nombreDe(m, k) {
   if (m.tipo === 'deposito') return bonito(m.c);
   return bonito(normComercio(m.c));
 }
+const terminacion = (c) => (String(c).split('·')[1] || '').trim();
 function preparar() {
   const aj = E.aj;
   const base = (E.datos.movs || []).concat((aj.manuales || []).map((m) => ({ ...m, manual: true })));
+  // Dinero entre tus cuentas: una cuenta a la que mandas Y de la que recibes es tuya (o se compensa).
+  const recibes = new Set(base.filter((m) => m.tipo === 'deposito').map((m) => terminacion(m.c)).filter(Boolean));
+  const mandas = new Set(base.filter((m) => m.tipo === 'transferencia').map((m) => terminacion(m.c)).filter(Boolean));
   E.movs = base.map((m) => {
     const k = claveDe(m);
     const cambio = aj.cambios[m.id] || {};
-    let cat = cambio.cat || aj.reglas[k] || m.cat || 'otros';
+    const t = terminacion(m.c);
+    const propia = (m.tipo === 'transferencia' && recibes.has(t)) || (m.tipo === 'deposito' && mandas.has(t)) ? 'propias' : null;
+    let cat = cambio.cat || aj.reglas[k] || propia || E.dicc[k] || m.cat_auto || m.cat || 'otros';
     if (m.tipo === 'deposito' && !CATS_INGRESO.includes(cat)) cat = 'ingreso';
     if (m.tipo !== 'deposito' && cat === 'ingreso') cat = 'otros';
     return { ...m, k, cat, nota: cambio.nota || '', nombre: nombreDe(m, k) };
@@ -315,14 +323,13 @@ function vistaInicio() {
   const usarMes = E.periodoInicio === 'mes';
   const rango = usarMes ? [mesK + '-01', mesMas(mesK, 1) + '-01'] : [p.inicio, p.fin];
   const porCat = agrupar(gastos(...rango), 'cat');
-  const pendientes = gruposPorClasificar().length;
   const ultimos = E.movs.slice(0, 6);
   const finTxt = fDia(p.fin);
 
   const avisoIOS = esIOS() && !esApp() && leer('mf_no_instalar') !== '1'
     ? `<div class="tarjeta" style="margin-bottom:12px;display:flex;gap:12px;align-items:flex-start">
         <div class="cat-ic" style="--c:var(--acento)">${ic('i-descargar')}</div>
-        <div style="flex:1"><b>Instálala en tu iPhone</b><div class="texto-2 peq" style="margin-top:3px">Toca <b>Compartir</b> y luego <b>«Agregar a inicio»</b>. Abrirá como app, sin barra de Safari y ya desbloqueada.</div></div>
+        <div style="flex:1"><b>Instálala en tu iPhone</b><div class="texto-2 peq" style="margin-top:3px">Toca <b>Compartir</b> y luego <b>«Agregar a inicio»</b>. Abrirá como app; entra una vez con Google ahí dentro y quedará guardada.</div></div>
         <button class="icono-btn" style="box-shadow:none;width:30px;height:30px" data-acc="noInstalar" aria-label="Cerrar">${ic('i-x')}</button></div>`
     : '';
 
@@ -332,7 +339,14 @@ function vistaInicio() {
     <button class="icono-btn ${E.sincronizando ? 'girando' : ''}" data-acc="sincronizar" aria-label="Actualizar">${ic('i-actualizar')}</button>
   </header>
   ${avisoIOS}
-  <section class="tarjeta heroe">
+  ${tarjetaProgreso()}
+  ${!E.perfil.gmail_conectado ? `<button class="llamado" data-acc="conectarGmail" style="margin:0 0 12px">
+      <span class="ic">${ic('i-candado')}</span>
+      <span><b>Conecta tu Gmail</b><span>Para leer los avisos de Santander y llenar todo solo</span></span>${ic('i-der')}</button>` : ''}
+  ${!(+E.aj.pago_monto) ? `<button class="llamado" data-acc="editarPago" style="margin:0 0 12px">
+      <span class="ic">${ic('i-cartera')}</span>
+      <span><b>¿Cuánto te pagan y cada cuándo?</b><span>Con eso te digo cuánto puedes gastar al día</span></span>${ic('i-der')}</button>` : ''}
+  <section class="tarjeta heroe" ${!(+E.aj.pago_monto) ? 'hidden' : ''}>
     <div class="etiqueta">${queda >= 0 ? `Disponible hasta tu pago del ${esc(finTxt)}` : 'Te pasaste de tu presupuesto'}</div>
     <div class="cifra num ${queda < 0 ? 'neg' : ''}">${queda < 0 ? '−' : ''}${fmt(Math.abs(queda))}</div>
     <div class="detalle">${queda > 0
@@ -355,10 +369,6 @@ function vistaInicio() {
     <div class="mosaico"><div class="et">Depósitos del mes</div><div class="va num">${fmt(ingMes)}</div><div class="de">recibidos en Santander</div></div>
   </div>
 
-  ${pendientes ? `<button class="llamado" data-acc="clasificar">
-      <span class="ic">${ic('i-chispa')}</span>
-      <span><b>${pendientes} ${pendientes === 1 ? 'comercio' : 'comercios'} por clasificar</b><span>Un toque cada uno y la app aprende para siempre</span></span>
-      ${ic('i-der')}</button>` : ''}
 
   <div class="rejilla">
     <div>
@@ -371,7 +381,7 @@ function vistaInicio() {
     </div>
     <div>
       <div class="seccion"><h2>Últimos movimientos</h2><button class="enlace" data-ir="movimientos">Ver todos</button></div>
-      <div class="tarjeta plana">${ultimos.map(filaMov).join('') || vacio('i-lista', 'Sin movimientos', 'Aparecerán aquí en cuanto lleguen')}</div>
+      <div class="tarjeta plana">${ultimos.map(filaMov).join('') || vacio('i-lista', 'Sin movimientos todavía', E.perfil.gmail_conectado ? 'Aparecerán aquí en cuanto se lean tus correos' : 'Conecta tu Gmail para empezar')}</div>
     </div>
   </div>`;
 }
@@ -726,27 +736,28 @@ function vistaAjustes() {
     ${item('editarPago', 'i-chispa', 'Meta de ahorro', `${+aj.meta_ahorro || 0} %`)}
     ${item('editarPresupuestos', 'i-grafica', 'Límites por categoría', nPres ? `${nPres} activos` : 'Ninguno')}
   </div>
-  <div class="seccion"><h2>Orden</h2></div>
+  <div class="seccion"><h2>Categorías y tarjetas</h2></div>
   <div class="tarjeta plana lista-aj">
-    ${item('clasificar', 'i-chispa', 'Clasificar comercios', `${gruposPorClasificar().length} pendientes`)}
-    ${item('editarReglas', 'i-regla', 'Lo que la app aprendió', `${nReglas} ${nReglas === 1 ? 'regla' : 'reglas'}`)}
-    ${item('editarTarjetas', 'i-tarjeta', 'Nombres de tarjetas y cuentas', `${E.tarjetasVistas.length}`)}
+    ${item('editarTarjetas', 'i-tarjeta', 'Tus tarjetas y cuentas', `${E.tarjetasVistas.length}`)}
+    ${item('editarReglas', 'i-regla', 'Tus correcciones', `${nReglas}`)}
+    ${item('clasificar', 'i-chispa', 'Revisar sin categoría', `${gruposPorClasificar().length}`)}
   </div>
+  <p class="texto-3 peq" style="margin:8px 4px 0">La IA clasifica sola cada comercio nuevo. Las tarjetas aparecen solas con su primer correo; aquí sólo les pones nombre.</p>
   </div><div>
-  <div class="seccion"><h2>Sincronización</h2></div>
+  <div class="seccion"><h2>Tu Gmail</h2></div>
   <div class="tarjeta plana lista-aj">
-    <div class="item">${ic('i-actualizar')}<span class="cuerpo">Correos de Santander<div class="texto-3 peq">${E.datos.movs.length.toLocaleString('es-MX')} movimientos${primero ? ` desde ${esc(fMes(mesDe(primero)))}` : ''} · ${esc(haceCuanto(E.datos.generado))}</div></span></div>
-    ${item('sincronizar', 'i-actualizar', 'Actualizar ahora', aj.gh_token ? '' : 'cada 3 h sola')}
-    ${item('editarGitHub', 'i-candado', 'Conexión con GitHub', aj.gh_token ? 'Conectada' : 'Opcional')}
+    <div class="item">${ic('i-actualizar')}<span class="cuerpo">${esc(E.usuario.email || '')}<div class="texto-3 peq">${E.perfil.gmail_conectado ? `${E.datos.movs.length.toLocaleString('es-MX')} movimientos${primero ? ` desde ${esc(fMes(mesDe(primero)))}` : ''} · ${E.datos.generado ? esc(haceCuanto(E.datos.generado)) : 'sin leer aún'}` : 'Gmail sin conectar'}</div></span></div>
+    ${E.perfil.gmail_conectado ? item('sincronizar', 'i-actualizar', 'Actualizar ahora', 'sola cada hora') : item('conectarGmail', 'i-candado', 'Conectar Gmail', '')}
   </div>
-  <div class="seccion"><h2>Dispositivos y datos</h2></div>
+  <div class="seccion"><h2>Cuenta</h2></div>
   <div class="tarjeta plana lista-aj">
-    ${item('agregarDispositivo', 'i-qr', 'Abrir en otro dispositivo', '')}
+    ${item('invitar', 'i-sube', 'Invitar a alguien', '')}
     ${item('exportar', 'i-descargar', 'Descargar en Excel (CSV)', '')}
     ${item('editarTema', 'i-ajustes', 'Apariencia', { auto: 'Automática', claro: 'Clara', oscuro: 'Oscura' }[aj.tema])}
-    <button class="item" data-acc="bloquear">${ic('i-candado')}<span class="cuerpo" style="color:var(--critico)">Cerrar en este dispositivo</span></button>
+    <button class="item" data-acc="cerrarSesion">${ic('i-candado')}<span class="cuerpo">Cerrar sesión</span></button>
+    <button class="item" data-acc="borrarCuenta">${ic('i-papelera')}<span class="cuerpo" style="color:var(--critico)">Borrar mi cuenta y mis datos</span></button>
   </div>
-  <p class="texto-3 peq centro" style="margin-top:22px">Mis Finanzas ${VERSION} · tus datos viajan cifrados; sólo este código los abre.</p>
+  <p class="texto-3 peq centro" style="margin-top:22px">Mis Finanzas ${VERSION} · cada cuenta sólo ve sus propios movimientos. <a href="privacy.html" style="color:inherit">Privacidad</a></p>
   </div></div>`;
 }
 
@@ -954,109 +965,81 @@ function hojaReglas() {
     : vacio('i-regla', 'Aún no hay reglas', 'Cuando cambies la categoría de un comercio, aparecerá aquí.')}`);
 }
 
-function hojaGitHub() {
-  const t = E.aj.gh_token;
-  abrirHoja(`${cabHoja('Conexión con GitHub')}
-    <p class="texto-2" style="margin-top:0">Es opcional. Sirve para dos cosas: el botón <b>Actualizar ahora</b> y que tus categorías y nombres aparezcan igual en todos tus dispositivos. Sin esto, la app se actualiza sola cada 3 horas y lo que ajustes se queda en este dispositivo.</p>
-    <ol class="pasos">
-      <li><span>Abre <b>github.com → Settings → Developer settings → Fine-grained tokens → Generate new token</b>.</span></li>
-      <li><span>En <b>Repository access</b> elige sólo <b>finance-app</b>. En permisos: <b>Contents</b> y <b>Actions</b> en «Read and write».</span></li>
-      <li><span>Copia el token y pégalo aquí. Se guarda cifrado con tus datos.</span></li>
-    </ol>
-    <label class="campo"><span>Token</span><input id="ghToken" value="${t ? '••••••••' + esc(t.slice(-4)) : ''}" placeholder="github_pat_…" autocomplete="off" spellcheck="false"></label>
-    <div class="dos">${t ? '<button class="btn peligro" data-acc="quitarToken">Desconectar</button>' : '<span></span>'}<button class="btn primario" data-acc="guardarToken">Guardar</button></div>`);
-}
-
-function hojaDispositivo() {
-  const url = `${location.origin}${location.pathname}#k=${E.claveTxt}`;
-  let qr = '';
-  try {
-    const q = qrcode(0, 'M'); q.addData(url); q.make();
-    qr = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
-  } catch { qr = ''; }
-  abrirHoja(`${cabHoja('Abrir en otro dispositivo')}
-    <p class="texto-2" style="margin-top:0">Escanea este código con la cámara del otro celular. Se abrirá ya desbloqueada.</p>
-    <div class="qr">${qr}</div>
-    <p class="texto-3 peq centro">No compartas este código: abre todos tus movimientos.</p>
-    <div class="dos"><button class="btn" data-acc="copiarCodigo">Copiar código</button><button class="btn primario" data-acc="cerrar">Listo</button></div>`);
-}
-
 function hojaTema() {
   abrirHoja(`${cabHoja('Apariencia')}
     <div class="seg">${[['auto', 'Automática'], ['claro', 'Clara'], ['oscuro', 'Oscura']].map(([v, n]) => `<button class="${E.aj.tema === v ? 'on' : ''}" data-acc="ponerTema" data-v="${v}">${n}</button>`).join('')}</div>
     <div style="height:10px"></div>`);
 }
 
-/* ── Sincronizar ────────────────────────────────────────────────────────── */
-async function sincronizarAhora() {
+/* ── Sincronizar (lee tus correos en tandas hasta terminar) ─────────────── */
+async function sincronizarAhora(primeraVez) {
   if (E.sincronizando) return;
-  const t = E.aj.gh_token;
-  if (!t) {
-    abrirHoja(`${cabHoja('Actualizar')}
-      <p class="texto-2" style="margin-top:0">La app revisa tus correos de Santander <b>cada 3 horas</b> por su cuenta. Última vez: <b>${esc(haceCuanto(E.datos.generado))}</b>.</p>
-      <p class="texto-2">Para poder actualizar al momento, conecta GitHub (un paso, una sola vez).</p>
-      <div class="dos"><button class="btn" data-acc="recargar">Recargar datos</button><button class="btn primario" data-acc="editarGitHub">Conectar</button></div>`);
-    return;
-  }
-  E.sincronizando = true; repintar();
-  avisar('Revisando tus correos…', null, 60000);
+  if (!E.perfil.gmail_conectado) { hojaConectarGmail(); return; }
+  E.sincronizando = true;
+  E.progreso = { hechos: 0, total: 0 };
+  repintar();
+  const antes = E.datos.movs.length;
   try {
-    const t0 = Date.now();
-    const r = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`, { method: 'POST', headers: gh(t), body: JSON.stringify({ ref: 'main' }) });
-    if (r.status === 401 || r.status === 403) throw new Error('GitHub no aceptó el token. Revísalo en Ajustes.');
-    if (!r.ok) throw new Error(`GitHub respondió ${r.status}.`);
-    let run = null;
-    for (let i = 0; i < 90; i++) {
-      await espera(i < 3 ? 3000 : 4000);
-      const l = await fetch(`https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?per_page=3&event=workflow_dispatch`, { headers: gh(t), cache: 'no-store' });
-      const j = await l.json();
-      run = (j.workflow_runs || []).find((x) => new Date(x.created_at) >= t0 - 15000);
-      if (run && run.status === 'completed') break;
-      if (i === 8) avisar('Leyendo correos y publicando… (≈1 min)', null, 60000);
+    for (let i = 0; i < 80; i++) {
+      const r = await llamar('sincronizar');
+      if (r.error === 'reconectar') { E.perfil.gmail_conectado = false; throw new Error('Google pidió volver a dar permiso a tu Gmail.'); }
+      E.progreso.hechos += r.revisados || 0;
+      E.progreso.total = Math.max(E.progreso.total, E.progreso.hechos + (r.pendientes || 0));
+      pintarProgreso();
+      if (!r.pendientes) break;
     }
-    if (!run || run.status !== 'completed') throw new Error('Tardó demasiado; se terminará solo en un momento.');
-    if (run.conclusion !== 'success') throw new Error('La actualización falló en GitHub. Revisa la pestaña Actions.');
-    const antes = E.datos.movs.length;
     await cargarTodo();
     const nuevos = E.datos.movs.length - antes;
-    avisar(nuevos > 0 ? `${nuevos} ${nuevos === 1 ? 'movimiento nuevo' : 'movimientos nuevos'}` : 'Ya estabas al día');
+    avisar(primeraVez && nuevos > 0 ? `Listo: ${nuevos.toLocaleString('es-MX')} movimientos` : nuevos > 0 ? `${nuevos} ${nuevos === 1 ? 'movimiento nuevo' : 'movimientos nuevos'}` : 'Ya estabas al día');
   } catch (e) {
     avisar(e.message || 'No se pudo actualizar.');
   } finally {
-    E.sincronizando = false; repintar();
+    E.sincronizando = false; E.progreso = null; repintar();
   }
 }
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ── Guardar ajustes (local + GitHub si hay token) ──────────────────────── */
+function tarjetaProgreso() {
+  const p = E.progreso;
+  if (!p) return '';
+  const pct = p.total ? Math.min(100, (p.hechos / p.total) * 100) : 4;
+  return `<section class="tarjeta" id="progreso" style="margin-bottom:12px">
+    <div class="etiqueta texto-2" style="font-weight:600;display:flex;gap:8px;align-items:center">${ic('i-actualizar', 'class="gira"')}Leyendo tus correos de Santander…</div>
+    <div class="medidor"><i style="width:${pct.toFixed(1)}%"></i></div>
+    <div class="medidor-pie"><span>${p.total ? `${p.hechos.toLocaleString('es-MX')} de ${p.total.toLocaleString('es-MX')}` : 'Buscando correos'}</span><span>la IA clasifica cada comercio</span></div>
+  </section>`;
+}
+function pintarProgreso() {
+  const el = $('#progreso');
+  if (el) el.outerHTML = tarjetaProgreso();
+}
+
+function hojaConectarGmail() {
+  abrirHoja(`${cabHoja('Conecta tu Gmail')}
+    <p class="texto-2" style="margin-top:0">Mis Finanzas lee <b>sólo</b> los avisos de Santander (compras, transferencias, depósitos y retiros). Nunca envía ni borra correos.</p>
+    <p class="texto-3 peq">Google mostrará «Google no verificó esta app»: toca <b>Configuración avanzada</b> → <b>Ir a Mis Finanzas</b> y marca el permiso de Gmail.</p>
+    <button class="btn primario ancho" data-acc="entrarGoogle">Conectar con Google</button>`);
+}
+
+function hojaInvitar() {
+  abrirHoja(`${cabHoja('Invitar a alguien')}
+    <p class="texto-2" style="margin-top:0">Cualquiera con cuenta de Gmail que reciba avisos de Santander puede usarla. Cada quien entra con su Google y sólo ve sus propios movimientos.</p>
+    <div class="campo"><input readonly value="${esc(URL_APP)}"></div>
+    <div class="dos"><button class="btn" data-acc="copiarEnlace">Copiar enlace</button><button class="btn primario" data-acc="compartirEnlace">Compartir</button></div>`);
+}
+
+/* ── Guardar ajustes (en este dispositivo y en tu cuenta) ───────────────── */
 function guardarAjustes() {
   E.aj.actualizado = Date.now();
   guardar('mf_aj', JSON.stringify(E.aj));
-  if (E.aj.gh_token) programarSubida();
+  programarSubida();
 }
 function programarSubida() {
   clearTimeout(E.subiendo);
-  E.subiendo = setTimeout(subirAjustes, 2500);
-}
-async function subirAjustes(intento = 0) {
-  const t = E.aj.gh_token;
-  if (!t) return;
-  const url = `https://api.github.com/repos/${REPO}/contents/docs/datos/ajustes.enc`;
-  try {
-    if (!E.ajSha) {
-      const g = await fetch(`${url}?ref=main`, { headers: gh(t), cache: 'no-store' });
-      if (g.ok) E.ajSha = (await g.json()).sha;
-    }
-    const bytes = await cifrar(E.aj, E.clave);
-    const body = { message: 'ajustes: cambios desde la app', content: bytesAB64(bytes), branch: 'main' };
-    if (E.ajSha) body.sha = E.ajSha;
-    const r = await fetch(url, { method: 'PUT', headers: gh(t), body: JSON.stringify(body) });
-    if ((r.status === 409 || r.status === 422) && intento < 2) { E.ajSha = null; return subirAjustes(intento + 1); }
-    if (!r.ok) throw new Error(String(r.status));
-    E.ajSha = (await r.json()).content.sha;
-  } catch {
-    avisar('No se pudieron subir tus ajustes; quedaron guardados aquí.');
-  }
+  E.subiendo = setTimeout(async () => {
+    const { error } = await sb.from('perfiles').update({ ajustes: E.aj }).eq('user_id', E.usuario.id);
+    if (error) avisar('No se guardaron tus ajustes en la nube; siguen en este dispositivo.');
+  }, 1200);
 }
 
 /* ── Aviso flotante ─────────────────────────────────────────────────────── */
@@ -1082,15 +1065,21 @@ function pantallaBloqueo(error) {
   $('#app').innerHTML = `<div class="bloqueo">
     <img class="logo" src="icono.svg" alt="">
     <h1>Mis Finanzas</h1>
-    <p>Tus gastos de Santander, claros y en un solo lugar. Es privada: tus datos viajan cifrados y sólo se abren con tu código de acceso.</p>
-    <ol class="pasos"><li><span>Abre tu <b>enlace de acceso</b> (el que termina en <b>#k=…</b>) o escanea su QR: entra solo.</span></li>
-      <li><span>Si ya está abierta en otro dispositivo: <b>Ajustes → Abrir en otro dispositivo</b>.</span></li>
-      <li><span>O pega aquí el código o el enlace completo.</span></li></ol>
-    <label class="campo"><span>Código de acceso</span>
-      <span style="display:flex;gap:8px"><input id="codigo" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Código o enlace" style="flex:1;min-width:0;width:auto">
-      <button class="btn" data-acc="pegarCodigo" style="height:48px">Pegar</button></span></label>
+    <p>Ve en qué se va tu dinero sin capturar nada: la app lee los avisos de Santander que llegan a tu Gmail y una IA clasifica cada gasto.</p>
+    <ol class="pasos">
+      <li><span>Entra con tu cuenta de Google <b>una sola vez</b>; queda guardada.</span></li>
+      <li><span>Da permiso de <b>sólo lectura</b> a tu Gmail. Nunca envía ni borra correos.</span></li>
+      <li><span>Google dirá «no verificó esta app»: toca <b>Configuración avanzada → Ir a Mis Finanzas</b>.</span></li>
+    </ol>
     ${error ? `<p style="color:var(--critico);margin:-4px 0 14px">${esc(error)}</p>` : ''}
-    <button class="btn primario ancho" data-acc="entrar">Entrar</button></div>`;
+    <button class="btn primario ancho" data-acc="entrarGoogle">${ICONO_G}Entrar con Google</button>
+    <p class="texto-3 peq centro" style="margin-top:14px">Cada cuenta sólo ve sus propios movimientos. <a href="privacy.html" style="color:inherit">Privacidad</a></p>
+  </div>`;
+}
+const ICONO_G = '<svg viewBox="0 0 48 48" style="width:20px;height:20px;stroke:none"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+function pintarCargando(texto) {
+  $('#app').classList.add('sin-barra');
+  $('#app').innerHTML = `<div class="bloqueo centro"><img class="logo" src="icono.svg" alt="" style="margin:0 auto 18px"><p>${esc(texto)}</p></div>`;
 }
 function pantallaError(e) {
   $('#app').innerHTML = `<div class="bloqueo">${vacio('i-alerta', 'No se pudieron cargar tus datos', e.message || 'Revisa tu conexión.')}
@@ -1165,36 +1154,29 @@ const ACC = {
   },
   editarReglas: hojaReglas,
   borrarRegla: (d) => { delete E.aj.reglas[d.k]; delete E.aj.revisados[d.k]; guardarAjustes(); preparar(); hojaReglas(); },
-  editarGitHub: hojaGitHub,
-  guardarToken: async () => {
-    const v = $('#ghToken').value.trim();
-    if (!v || v.startsWith('••')) { cerrarHoja(); return; }
-    const r = await fetch(`https://api.github.com/repos/${REPO}`, { headers: gh(v) }).catch(() => null);
-    if (!r || !r.ok) { avisar('Ese token no funciona con finance-app.'); return; }
-    const j = await r.json();
-    if (!j.permissions || !j.permissions.push) { avisar('El token necesita permiso de escritura (Contents).'); return; }
-    E.aj.gh_token = v; guardarAjustes(); cerrarHoja(); repintar(); avisar('GitHub conectado');
-  },
-  quitarToken: () => { E.aj.gh_token = ''; guardarAjustes(); cerrarHoja(); repintar(); },
-  agregarDispositivo: hojaDispositivo,
-  copiarCodigo: async () => { try { await navigator.clipboard.writeText(E.claveTxt); avisar('Código copiado'); } catch { avisar('No se pudo copiar'); } },
   exportar: exportarCSV,
   editarTema: hojaTema,
   ponerTema: (d) => { E.aj.tema = d.v; guardar('mf_tema', d.v); aplicarTema(d.v); guardarAjustes(); cerrarHoja(); repintar(); },
-  bloquear: () => {
-    if (!confirm('¿Cerrar Mis Finanzas en este dispositivo? Necesitarás el código o el QR para volver a abrirla.')) return;
-    ['mf_clave', 'mf_aj'].forEach((k) => guardar(k, null));
+  entrarGoogle: () => entrarConGoogle(),
+  conectarGmail: () => hojaConectarGmail(),
+  invitar: () => hojaInvitar(),
+  copiarEnlace: async () => { try { await navigator.clipboard.writeText(URL_APP); avisar('Enlace copiado'); } catch { avisar('No se pudo copiar'); } },
+  compartirEnlace: async () => {
+    try { await navigator.share({ title: 'Mis Finanzas', text: 'Ve en qué se va tu dinero (avisos de Santander en Gmail):', url: URL_APP }); }
+    catch { ACC.copiarEnlace(); }
+  },
+  cerrarSesion: async () => {
+    if (!confirm('¿Cerrar sesión en este dispositivo?')) return;
+    await sb.auth.signOut();
+    guardar('mf_aj', null);
     location.replace(location.pathname);
   },
-  entrar: async () => {
-    const v = $('#codigo').value.trim().replace(/^.*#k=/, '').replace(/\s+/g, '');
-    if (!v) { $('#codigo').focus(); return avisar('Primero pega tu código o tu enlace de acceso'); }
-    try { await importarClave(v); } catch { return pantallaBloqueo('Ese código no es válido: deben ser 43 caracteres.'); }
-    guardar('mf_clave', v); location.reload();
-  },
-  pegarCodigo: async () => {
-    try { $('#codigo').value = (await navigator.clipboard.readText()).trim(); ACC.entrar(); }
-    catch { $('#codigo').focus(); avisar('Mantén presionado el campo y elige «Pegar»'); }
+  borrarCuenta: async () => {
+    if (!confirm('Se borrarán para siempre tu cuenta, tus movimientos y el permiso a tu Gmail. No se puede deshacer. ¿Continuar?')) return;
+    try { await llamar('borrar-cuenta'); } catch (e) { avisar(e.message); return; }
+    await sb.auth.signOut();
+    guardar('mf_aj', null);
+    location.replace(location.pathname);
   },
   deshacer: () => { const f = E.deshacer; $('#aviso').hidden = true; if (f) f(); },
   manualTipo: (d, b) => {
