@@ -82,7 +82,7 @@ function normComercio(c) {
 /* ── Conexión (Supabase + Google) ───────────────────────────────────────── */
 const SUPA_URL = 'https://otxgrrczeznexxobamtv.supabase.co';
 const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im90eGdycmN6ZXpuZXh4b2JhbXR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2MTk4NTIsImV4cCI6MjExMDE5NTg1Mn0.eVS16h-Wc4TwSTWzw3CiWxmMFC0l9jJc2hz1gwC3YEw'; // llave pública: sólo deja ver lo propio de cada quien (RLS)
-const GOOGLE_ID = '108907084207-glbo6rn9s87ktmlm5oe9knjan0n66d9i.apps.googleusercontent.com';
+const GOOGLE_ID = '108907084207-t72q2gh330g4pajgad82ulflmonqpd6r.apps.googleusercontent.com';
 const ALCANCES = 'openid email profile https://www.googleapis.com/auth/gmail.readonly';
 const URL_APP = location.origin + location.pathname;
 const sb = window.supabase.createClient(SUPA_URL, SUPA_ANON, {
