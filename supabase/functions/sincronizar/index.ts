@@ -32,9 +32,13 @@ async function accesoGmail(uid: string): Promise<string | null> {
 
 async function gmail(at: string, ruta: string, intento = 0): Promise<any> {
   const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/" + ruta, { headers: { Authorization: "Bearer " + at } });
-  if ((r.status === 429 || r.status >= 500) && intento < 4) { await espera(1500 * (intento + 1)); return gmail(at, ruta, intento + 1); }
-  if (!r.ok) throw new Error(`Gmail ${r.status}`);
-  return r.json();
+  if (r.ok) return r.json();
+  const cuerpo = await r.json().catch(() => ({}));
+  const motivo = cuerpo?.error?.errors?.[0]?.reason || cuerpo?.error?.status || "";
+  // Gmail avisa «vas muy rápido» con 429 o con 403 rateLimitExceeded/userRateLimitExceeded: se espera y se reintenta.
+  const ritmo = r.status === 429 || r.status >= 500 || (r.status === 403 && /rate|quota|limit/i.test(motivo));
+  if (ritmo && intento < 5) { await espera(2000 * 2 ** intento); return gmail(at, ruta, intento + 1); }
+  throw new Error(r.status === 403 && !ritmo ? "Gmail no dio permiso: vuelve a entrar y marca el permiso de Gmail" : `Gmail ${r.status}${motivo ? " " + motivo : ""}`);
 }
 
 async function listarIds(at: string, q: string): Promise<string[]> {
@@ -66,7 +70,7 @@ function cuerpo(payload: any): string {
 async function traer(at: string, ids: string[]): Promise<{ id: string; asunto: string; texto: string }[]> {
   const out: { id: string; asunto: string; texto: string }[] = [];
   const cola = [...ids];
-  await Promise.all(Array.from({ length: 8 }, async () => {
+  await Promise.all(Array.from({ length: 4 }, async () => {
     while (cola.length) {
       const id = cola.shift()!;
       try {
@@ -327,7 +331,7 @@ Deno.serve(async (req) => {
     if (!u?.user) return json({ error: "Inicia sesión" }, 401);
     const { accion } = await req.json().catch(() => ({}));
     if (accion === "clasificar") return json(await clasificarUsuario(u.user.id));
-    return json(await sincronizarUsuario(u.user.id, 100));
+    return json(await sincronizarUsuario(u.user.id, 80));
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 500);
   }
