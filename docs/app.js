@@ -368,6 +368,7 @@ function ir(v, conservarScroll) {
   $('#app').classList.remove('sin-barra');
   $('#app').innerHTML = VISTAS[v]();
   ocultarTip();
+  document.querySelectorAll('.anio-scroll').forEach((e) => { e.scrollLeft = e.scrollWidth; });
   if (!conservarScroll) window.scrollTo(0, 0);
 }
 const repintar = () => ir(E.vista, true);
@@ -477,6 +478,7 @@ function vistaInicio() {
       <div class="tarjeta plana">${listaCategorias(porCat, usarMes ? 'mes' : 'pago', rango)}</div>
     </div>
     <div>
+      ${seccionTarjetas()}
       <div class="seccion"><h2>Últimos movimientos</h2><button class="enlace" data-ir="movimientos">Ver todos</button></div>
       <div class="tarjeta plana">${ultimos.map(filaMov).join('') || vacio('i-lista', 'Sin movimientos todavía', E.perfil.gmail_conectado ? 'Aparecerán aquí en cuanto se lean tus correos' : 'Conecta tu Gmail para empezar')}</div>
     </div>
@@ -678,7 +680,7 @@ function analisisResumen(R) {
       <div class="seccion"><h2>Dónde más gastas</h2></div>
       <div class="tarjeta plana">${porComercio.map((x) => {
         const m0 = x.movs[0]; const cat = CATS[m0.cat] || CATS.otros;
-        return `<button class="fila" data-acc="verComercio" data-g="${esc(x.k)}">
+        return `<button class="fila" data-acc="fichaComercio" data-g="${esc(x.k)}">
           <span class="cat-ic" style="--c:${cat.c}">${ic('c-' + m0.cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(m0.nombre)}</span><span class="t2">${x.n} ${x.n === 1 ? 'vez' : 'veces'} · ${esc(cat.n)}</span></span>
           <span class="monto num">${fmt(x.total)}</span></button>`;
@@ -690,7 +692,7 @@ function analisisResumen(R) {
         ${tablaDatos(dow.map((x) => [x.et, fmt(x.v)]), ['Día', 'Promedio'])}</div>
 
       ${recurrentes.length ? `<div class="seccion"><h2>Pagos que se repiten</h2><span class="texto-3 peq">${fmt(recurrentes.reduce((a, r) => a + r.prom, 0))}/mes</span></div>
-      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="verComercio" data-g="${esc(r.g)}">
+      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="fichaComercio" data-g="${esc(r.g)}">
           <span class="cat-ic" style="--c:${(CATS[r.cat] || CATS.otros).c}">${ic('c-' + r.cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(r.nombre)}</span><span class="t2">${r.meses} de los últimos 4 meses</span></span>
           <span class="monto num">${fmt(r.prom)}<small>al mes</small></span></button>`).join('')}</div>` : ''}
@@ -754,11 +756,14 @@ const DIAS_LMD = [1, 2, 3, 4, 5, 6, 0];
 function vistaAnalisis() {
   const v = E.an.vista || 'resumen';
   const R = rangoAnalisis();
-  const pestanas = [['resumen', 'General'], ['dia', 'Día a día'], ['habitos', 'Hábitos'], ['ahorro', 'Ahorrar']];
+  const pestanas = [['resumen', 'General'], ['dia', 'Día a día'], ['comparar', 'Comparar'], ['tendencias', 'Tendencias'], ['habitos', 'Hábitos'], ['alertas', 'Alertas'], ['ahorro', 'Ahorrar']];
   const mesK = mesDe(iso(hoy()));
+  const nAlertas = calcularAlertas().filter((a) => a.nivel).length;
   const rangos = [['mes', 'Mes'], ['3m', '3 m'], ['6m', '6 m'], ['12m', '1 año'], ['todo', 'Todo']];
   let selector = '';
-  if (v === 'dia') {
+  if (v === 'comparar' || v === 'tendencias' || v === 'alertas') {
+    selector = '';
+  } else if (v === 'dia') {
     const k = E.an.mesDia || mesK;
     selector = `<div class="navmes"><button class="icono-btn" data-acc="mesDia" data-d="-1" aria-label="Mes anterior">${ic('i-izq')}</button><b>${esc(cap(fMes(k)))}</b>
       <button class="icono-btn" data-acc="mesDia" data-d="1" aria-label="Mes siguiente" ${k >= mesK ? 'disabled style="opacity:.35"' : ''}>${ic('i-der')}</button></div>`;
@@ -767,9 +772,9 @@ function vistaAnalisis() {
       ${E.an.rango === 'mes' ? `<div class="navmes"><button class="icono-btn" data-acc="mesAn" data-d="-1" aria-label="Mes anterior">${ic('i-izq')}</button><b>${esc(R.etiqueta)}</b>
       <button class="icono-btn" data-acc="mesAn" data-d="1" aria-label="Mes siguiente" ${(E.an.mes || mesK) >= mesK ? 'disabled style="opacity:.35"' : ''}>${ic('i-der')}</button></div>` : ''}`;
   }
-  const cuerpo = v === 'dia' ? analisisDia() : v === 'habitos' ? analisisHabitos(R) : v === 'ahorro' ? analisisAhorro(R) : analisisResumen(R);
-  return `<header class="encabezado"><div><h1>Análisis</h1><div class="sub">${v === 'dia' ? 'Cada día, a detalle' : esc(R.etiqueta)}</div></div></header>
-    <div class="seg pestanas">${pestanas.map(([p, n]) => `<button class="${v === p ? 'on' : ''}" data-acc="pestanaAn" data-v="${p}">${n}</button>`).join('')}</div>
+  const cuerpo = v === 'comparar' ? analisisComparar() : v === 'tendencias' ? analisisTendencias() : v === 'alertas' ? analisisAlertas() : v === 'dia' ? analisisDia() : v === 'habitos' ? analisisHabitos(R) : v === 'ahorro' ? analisisAhorro(R) : analisisResumen(R);
+  return `<header class="encabezado"><div><h1>Análisis</h1><div class="sub">${{ dia: 'Cada día, a detalle', comparar: 'Qué cambió y por qué', tendencias: 'Cómo se mueve cada gasto', alertas: 'Cargos raros y lo que viene' }[v] || esc(R.etiqueta)}</div></div></header>
+    <div class="chips pestanas">${pestanas.map(([p, n]) => `<button class="chip ${v === p ? 'on' : ''}" data-acc="pestanaAn" data-v="${p}">${n}${p === 'alertas' && nAlertas ? ` <span class="globo">${nAlertas}</span>` : ''}</button>`).join('')}</div>
     ${selector}${cuerpo}`;
 }
 
@@ -979,6 +984,7 @@ function analisisHabitos(R) {
         ${graficaColumnas(horas, { alto: 170, sinValores: true })}
         ${madrugada.length ? `<p class="peq texto-2" style="margin:10px 0 0">Entre 12 y 6 de la mañana: <b style="color:var(--texto)">${fmt(suma(madrugada) / R.meses)} al mes</b> en ${madrugada.length} compras, sobre todo en ${esc(agrupar(madrugada, 'g').slice(0, 2).map((x) => x.movs[0].nombre).join(' y '))}.</p>` : ''}
         ${tablaDatos(porHora.map((v, h) => [`${h}:00`, fmt(v / R.meses)]), ['Hora', 'Al mes'])}</div>
+      ${histogramaTickets(g, R)}
       <div class="seccion"><h2>Día y momento</h2><span class="texto-3 peq">compras por semana</span></div>
       <div class="tarjeta">${mapa}${leyendaCalor()}</div>
       <div class="seccion"><h2>En qué exactamente</h2><span class="texto-3 peq">subcategorías</span></div>
@@ -993,12 +999,12 @@ function analisisHabitos(R) {
     </div>
     <div>
       <div class="seccion"><h2>Gastos hormiga</h2><span class="texto-3 peq">compras de menos de $150</span></div>
-      <div class="tarjeta plana">${hormigaTop.map((x) => `<button class="fila" data-acc="verComercio" data-g="${esc(x.k)}">
+      <div class="tarjeta plana">${hormigaTop.map((x) => `<button class="fila" data-acc="fichaComercio" data-g="${esc(x.k)}">
           <span class="cat-ic" style="--c:${CATS[x.movs[0].cat].c}">${ic('c-' + x.movs[0].cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(x.movs[0].nombre)}</span><span class="t2">${vecesTxt(x.n)} · ${vecesTxt(x.n / R.meses)} al mes · ticket ${fmt(x.total / x.n)}</span></span>
           <span class="monto num">${fmt(x.total / R.meses)}<small>al mes</small></span></button>`).join('') || vacio('i-cartera', 'Sin gastos hormiga', '')}</div>
       <div class="seccion"><h2>A dónde vas más seguido</h2></div>
-      <div class="tarjeta plana">${frecuentes.map((x) => `<button class="fila" data-acc="verComercio" data-g="${esc(x.k)}">
+      <div class="tarjeta plana">${frecuentes.map((x) => `<button class="fila" data-acc="fichaComercio" data-g="${esc(x.k)}">
           <span class="cat-ic" style="--c:${CATS[x.movs[0].cat].c}">${ic('c-' + x.movs[0].cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(x.movs[0].nombre)}</span><span class="t2">${vecesTxt(x.n / R.meses)} al mes · ticket ${fmt(x.total / x.n)}</span></span>
           <span class="monto num">${fmt(x.total / R.meses)}<small>al mes</small></span></button>`).join('')}</div>
@@ -1091,9 +1097,10 @@ function analisisAhorro(R) {
         <div class="texto-2 peq">${a.texto}</div></div></div>`).join('') || `<div class="tarjeta">${vacio('i-check', '¡Vas muy bien!', 'No vemos gastos evitables grandes en este periodo.')}</div>`}
     </div>
     <div>
+      ${bloqueHorasYRegla(R, g)}
       ${ahorroReal}
       ${recurrentes.length ? `<div class="seccion"><h2>Revisa lo que pagas cada mes</h2><span class="texto-3 peq">${fmt(recurrentes.reduce((a, r) => a + r.prom, 0))}/mes</span></div>
-      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="verComercio" data-g="${esc(r.g)}">
+      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="fichaComercio" data-g="${esc(r.g)}">
           <span class="cat-ic" style="--c:${(CATS[r.cat] || CATS.otros).c}">${ic('c-' + r.cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(r.nombre)}</span><span class="t2">${r.meses} de los últimos 4 meses · ¿lo sigues usando?</span></span>
           <span class="monto num">${fmt(r.prom)}<small>al mes</small></span></button>`).join('')}</div>` : ''}
@@ -1127,6 +1134,302 @@ function graficaLinea(series, { maxX, alto = 200 } = {}) {
     s += `<rect class="zona" x="${(x(d) - (W - izq - der) / maxX / 2).toFixed(1)}" y="0" width="${((W - izq - der) / maxX).toFixed(1)}" height="${H}" data-tip="${esc(`<b>Día ${d}</b>${a ? ` · llevas ${fmt(a[1])}` : ''}${p ? ` · el mes pasado ${fmt(p[1])}` : ''}`)}"/>`;
   }
   return `<div class="grafica">${s}</svg></div>`;
+}
+
+/* ── Más análisis: comparar, tendencias, alertas, ficha de comercio, tarjetas ── */
+const comprasDe = (desde, hasta) => gastos(desde, hasta).filter((m) => m.tipo === 'compra');
+const finMes = (k) => mesMas(k, 1) + '-01';
+const horaPorPeso = () => {
+  const horasMes = (+E.aj.horas_semana || 40) * 4.33;
+  const ing = ingresoMensual();
+  return ing > 0 ? horasMes / ing : 0; // horas de trabajo por cada peso
+};
+const horasTxt = (h) => (h >= 16 ? `${(h / 8).toFixed(1).replace('.0', '')} días de trabajo` : `${Math.round(h)} h de trabajo`);
+
+/* Mini columnas (12 meses) para listas */
+function miniColumnas(vals, { alto = 34, ancho = 120 } = {}) {
+  const max = Math.max(...vals, 1); const b = ancho / vals.length; const w = Math.max(3, b * 0.62);
+  return `<svg class="mini" viewBox="0 0 ${ancho} ${alto}" aria-hidden="true">${vals.map((v, i) => {
+    const h = Math.max(v > 0 ? 2 : 0, (v / max) * (alto - 2));
+    return `<rect x="${(i * b + (b - w) / 2).toFixed(1)}" y="${(alto - h).toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" class="${i === vals.length - 1 ? 'ult' : ''}"/>`;
+  }).join('')}</svg>`;
+}
+const doceMeses = () => { const k = mesDe(iso(hoy())); return Array.from({ length: 12 }, (_, i) => mesMas(k, i - 11)); };
+
+/* ── Ficha de un comercio ───────────────────────────────────────────────── */
+function hojaComercio(g) {
+  const ms = E.movs.filter((m) => m.g === g && esGasto(m));
+  if (!ms.length) return;
+  const m0 = ms[0]; const cat = CATS[m0.cat] || CATS.otros;
+  const total = suma(ms); const tickets = ms.map((m) => m.m);
+  const fechas = [...new Set(ms.map((m) => m.f))].sort();
+  const huecos = fechas.slice(1).map((f, i) => difDias(fecha(fechas[i]), fecha(f)));
+  const cada = huecos.length ? mediana(huecos) : null;
+  const meses = doceMeses(); const porMes = meses.map((k) => suma(ms.filter((m) => mesDe(m.f) === k)));
+  const activos = porMes.filter((v) => v > 0).length;
+  const franjas = FRANJAS.map(([n, a, b]) => ({ n, c: ms.filter((m) => { const h = horaDe(m); return h != null && h >= a && h < b; }).length }));
+  const franja = franjas.sort((a, b) => b.c - a.c)[0];
+  const dias = [0, 0, 0, 0, 0, 0, 0]; for (const m of ms) dias[fecha(m.f).getDay()]++;
+  const diaTop = dias.indexOf(Math.max(...dias));
+  const seis = iso(sumaDias(hoy(), -182));
+  const catSeis = suma(gastos(seis).filter((m) => m.cat === m0.cat)); const suSeis = suma(ms.filter((m) => m.f >= seis));
+  const hp = horaPorPeso();
+  const sinVenir = difDias(fecha(fechas[fechas.length - 1]), hoy());
+  abrirHoja(`${cabHoja('Comercio')}
+    <div class="grande" style="padding-bottom:10px">
+      <div class="cat-ic" style="--c:${cat.c}">${ic('c-' + m0.cat)}</div>
+      <div class="n" style="font-size:22px">${esc(m0.nombre)}</div>
+      <div class="d">${esc(cat.n)}${m0.sub ? ` › ${esc(m0.sub)}` : ''}${m0.esencial != null ? ` · ${m0.esencial ? 'necesario' : 'gusto'}` : ''}</div>
+    </div>
+    <div class="mosaicos" style="margin-top:0">
+      <div class="mosaico plano"><div class="et">En total</div><div class="va num">${fmt(total)}</div><div class="de">${vecesTxt(ms.length)} desde ${esc(fMes(mesDe(fechas[0])))}</div></div>
+      <div class="mosaico plano"><div class="et">Ticket típico</div><div class="va num">${fmt(mediana(tickets))}</div><div class="de">el más alto ${fmt(Math.max(...tickets))}</div></div>
+      <div class="mosaico plano"><div class="et">Vas cada</div><div class="va num">${cada != null ? `${Math.round(cada)} día${Math.round(cada) === 1 ? '' : 's'}` : '—'}</div><div class="de">última vez ${sinVenir === 0 ? 'hoy' : sinVenir === 1 ? 'ayer' : `hace ${sinVenir} días`}</div></div>
+      <div class="mosaico plano"><div class="et">Últimos 12 meses</div><div class="va num">${fmt(porMes.reduce((a, b) => a + b, 0))}</div><div class="de">${activos} de 12 meses${hp ? ` · ${horasTxt(porMes.reduce((a, b) => a + b, 0) * hp)}` : ''}</div></div>
+    </div>
+    <h4>Mes por mes</h4>
+    <div class="tarjeta" style="box-shadow:none;background:var(--sup-2)">${graficaColumnas(meses.map((k, i) => ({ et: MESES[fecha(k + '-01').getMonth()], tip: cap(fMes(k)), v: porMes[i], actual: true })), { alto: 150 })}</div>
+    <h4>Cuándo vas</h4>
+    <p class="texto-2" style="margin:0 2px">Sobre todo en la <b>${esc(franja.n.toLowerCase())}</b> y los <b>${esc(DIAS_L[diaTop])}</b>. ${catSeis > 0 ? `En los últimos 6 meses es el <b>${Math.round((suSeis / catSeis) * 100)} %</b> de lo que gastas en ${esc(cat.n.toLowerCase())}.` : ''}</p>
+    <div class="dos" style="margin-top:16px"><button class="btn" data-acc="verComercio" data-g="${esc(g)}">Ver movimientos</button><button class="btn primario" data-acc="cerrar">Listo</button></div>`);
+}
+
+/* ── Comparar un mes contra el anterior: qué explica la diferencia ──────── */
+function analisisComparar() {
+  const mesK = mesDe(iso(hoy()));
+  const A = E.an.cmp || mesK; const B = mesMas(A, -1);
+  const actual = A === mesK;
+  const dia = hoy().getDate();
+  // Mes en curso: se compara a la misma fecha (1 al día de hoy) para que sea justo
+  const finA = actual ? iso(sumaDias(hoy(), 1)) : finMes(A);
+  const finB = actual ? (() => { const f = sumaDias(fecha(B + '-01'), dia); return iso(f) > finMes(B) ? finMes(B) : iso(f); })() : finMes(B);
+  const gA = gastos(A + '-01', finA); const gB = gastos(B + '-01', finB);
+  const tA = suma(gA); const tB = suma(gB); const d = tA - tB;
+  const cats = new Set([...gA, ...gB].map((m) => m.cat));
+  const filas = [...cats].map((c) => { const a = suma(gA.filter((m) => m.cat === c)); const b = suma(gB.filter((m) => m.cat === c)); return { c, a, b, d: a - b }; })
+    .sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+  const maxD = Math.max(1, ...filas.map((f) => Math.abs(f.d)));
+  const coms = new Set([...gA, ...gB].map((m) => m.g));
+  const porCom = [...coms].map((g) => { const a = gA.filter((m) => m.g === g); const b = gB.filter((m) => m.g === g); return { g, nombre: (a[0] || b[0]).nombre, cat: (a[0] || b[0]).cat, d: suma(a) - suma(b), na: a.length, nb: b.length }; });
+  const suben = porCom.filter((x) => x.d > 0).sort((a, b) => b.d - a.d).slice(0, 5);
+  const bajan = porCom.filter((x) => x.d < 0).sort((a, b) => a.d - b.d).slice(0, 4);
+  const mismoSigno = filas.filter((f) => Math.sign(f.d) === Math.sign(d) && f.d !== 0);
+  const explican = mismoSigno.slice(0, 2);
+  const nA = cap(MESES_L[fecha(A + '-01').getMonth()]); const nB = MESES_L[fecha(B + '-01').getMonth()];
+  const resumen = !tB ? 'No hay datos del mes anterior para comparar.'
+    : `${actual ? `Del 1 al ${dia} de ${nA.toLowerCase()}` : `En ${nA.toLowerCase()}`} gastaste <b>${fmt(Math.abs(d))} ${d >= 0 ? 'más' : 'menos'}</b> que ${actual ? `en los mismos días de ${nB}` : `en ${nB}`} (${d >= 0 ? '+' : '−'}${Math.round(Math.abs(d / tB) * 100)} %).${explican.length ? ` Se explica sobre todo por ${explican.map((f) => `<b>${esc(CATS[f.c].n.toLowerCase())}</b> (${f.d >= 0 ? '+' : '−'}${fmt(Math.abs(f.d))})`).join(' y ')}.` : ''}`;
+  const filaCom = (x) => `<button class="fila" data-acc="fichaComercio" data-g="${esc(x.g)}"><span class="cat-ic" style="--c:${CATS[x.cat].c}">${ic('c-' + x.cat)}</span>
+    <span class="cuerpo"><span class="t1">${esc(x.nombre)}</span><span class="t2">${vecesTxt(x.na)} ahora · ${vecesTxt(x.nb)} antes</span></span>
+    <span class="monto num ${x.d > 0 ? 'sube' : 'baja'}">${x.d > 0 ? '+' : '−'}${fmt(Math.abs(x.d))}</span></button>`;
+  return `
+  <div class="navmes"><button class="icono-btn" data-acc="mesCmp" data-d="-1" aria-label="Mes anterior">${ic('i-izq')}</button>
+    <b>${esc(nA)} contra ${esc(nB)}</b>
+    <button class="icono-btn" data-acc="mesCmp" data-d="1" aria-label="Mes siguiente" ${A >= mesK ? 'disabled style="opacity:.35"' : ''}>${ic('i-der')}</button></div>
+  <section class="tarjeta" style="margin-top:6px">
+    <div class="dos-cifras"><div><div class="et texto-2 peq">${esc(nA)}${actual ? ` (al día ${dia})` : ''}</div><div class="cifra-m num">${fmt(tA)}</div></div>
+      <div><div class="et texto-2 peq">${esc(cap(nB))}${actual ? ` (al día ${dia})` : ''}</div><div class="cifra-m num texto-2">${fmt(tB)}</div></div></div>
+    <p class="texto-2" style="margin:12px 0 0">${resumen}</p>
+  </section>
+  <div class="rejilla">
+    <div>
+      <div class="seccion"><h2>Qué cambió</h2><span class="texto-3 peq">por categoría</span></div>
+      <div class="tarjeta"><div class="cambios">${filas.map((f) => `<button class="fila-cambio" data-acc="verCategoria" data-cat="${f.c}" data-desde="${A}-01" data-hasta="${finA}" data-tip="${esc(`<b>${CATS[f.c].n}</b> · ${fmt(f.a)} contra ${fmt(f.b)}`)}">
+        <span class="nom">${esc(CATS[f.c].n)}</span>
+        <span class="eje-d"><i class="${f.d > 0 ? 'mas' : 'menos'}" style="width:${((Math.abs(f.d) / maxD) * 50).toFixed(1)}%"></i></span>
+        <b class="num ${f.d > 0 ? 'sube' : f.d < 0 ? 'baja' : ''}">${f.d > 0 ? '+' : f.d < 0 ? '−' : ''}${fmt(Math.abs(f.d))}</b></button>`).join('')}</div>
+        <div class="leyenda"><span><i style="--c:var(--critico)"></i>Gastaste más</span><span><i style="--c:var(--bien)"></i>Gastaste menos</span></div></div>
+    </div>
+    <div>
+      <div class="seccion"><h2>Dónde subió</h2></div>
+      <div class="tarjeta plana">${suben.map(filaCom).join('') || vacio('i-check', 'Nada subió', '')}</div>
+      <div class="seccion"><h2>Dónde bajó</h2></div>
+      <div class="tarjeta plana">${bajan.map(filaCom).join('') || vacio('i-cartera', 'Nada bajó', '')}</div>
+    </div>
+  </div>`;
+}
+
+/* ── Tendencias: cada categoría, 12 meses ───────────────────────────────── */
+function analisisTendencias() {
+  const meses = doceMeses();
+  const completos = meses.slice(0, 11);
+  const g = gastos(meses[0] + '-01');
+  const cats = agrupar(g, 'cat');
+  const filas = cats.map((x) => {
+    const vals = meses.map((k) => suma(x.movs.filter((m) => mesDe(m.f) === k)));
+    const c = completos.map((k, i) => vals[i]);
+    const ult3 = c.slice(-3).reduce((a, b) => a + b, 0) / 3; const prev3 = c.slice(-6, -3).reduce((a, b) => a + b, 0) / 3;
+    const tend = prev3 > 0 ? (ult3 - prev3) / prev3 : null;
+    return { k: x.k, vals, prom: c.reduce((a, b) => a + b, 0) / 11, tend, ult3 };
+  });
+  const comparables = filas.filter((f) => !['transferencias', 'propias', 'otros'].includes(f.k));
+  const sube = comparables.filter((f) => f.tend != null && f.prom > 200).sort((a, b) => b.tend - a.tend)[0];
+  const baja = comparables.filter((f) => f.tend != null && f.prom > 200).sort((a, b) => a.tend - b.tend)[0];
+
+  // Año en calor (últimas 53 semanas)
+  const porDia = {}; for (const m of gastos(iso(sumaDias(hoy(), -371)))) porDia[m.f] = (porDia[m.f] || 0) + m.m;
+  const nivel = nivelesCalor(Object.values(porDia));
+  const inicio = sumaDias(hoy(), -(52 * 7 + ((hoy().getDay() + 6) % 7)));
+  let celdas = '';
+  for (let x = inicio; x <= hoy(); x = sumaDias(x, 1)) {
+    const f = iso(x); const v = porDia[f] || 0;
+    celdas += `<span class="c${nivel(v)}" data-tip="${esc(`<b>${cap(fDia(f))}</b> · ${v ? fmt(v) : 'sin gastos'}`)}"></span>`;
+  }
+  const mesesEt = []; for (let i = 0; i < 53; i += 1) { const f = sumaDias(inicio, i * 7); if (f.getDate() <= 7) mesesEt.push(`<span style="grid-column:${i + 1}">${MESES[f.getMonth()]}</span>`); }
+
+  return `
+  ${sube && baja ? `<div class="mosaicos" style="margin-top:14px">
+    <div class="mosaico"><div class="et">Lo que más sube</div><div class="va">${esc(CATS[sube.k].n)}</div><div class="de sube">${ic('i-sube')}${Math.round(sube.tend * 100)} % (3 meses contra 3 anteriores)</div></div>
+    <div class="mosaico"><div class="et">Lo que más baja</div><div class="va">${esc(CATS[baja.k].n)}</div><div class="de baja">${ic('i-baja')}${Math.round(baja.tend * 100)} %</div></div>
+  </div>` : ''}
+  <div class="seccion"><h2>Tu año, día por día</h2><span class="texto-3 peq">gasto de cada día</span></div>
+  <div class="tarjeta"><div class="anio-scroll"><div class="anio-meses">${mesesEt.join('')}</div><div class="anio">${celdas}</div></div>${leyendaCalor()}</div>
+  <div class="seccion"><h2>Cada categoría, mes a mes</h2><span class="texto-3 peq">últimos 12 meses</span></div>
+  <div class="tarjeta plana">${filas.map((f) => `<button class="fila tend" data-acc="verCategoria" data-cat="${f.k}" data-desde="${meses[0]}-01" data-hasta="${finMes(meses[11])}">
+    <span class="cat-ic" style="--c:${CATS[f.k].c}">${ic('c-' + f.k)}</span>
+    <span class="cuerpo"><span class="t1">${esc(CATS[f.k].n)}</span><span class="t2">${fmt(f.prom)}/mes${f.tend != null ? ` · <span class="${f.tend > 0.1 ? 'sube' : f.tend < -0.1 ? 'baja' : ''}">${f.tend > 0 ? '+' : ''}${Math.round(f.tend * 100)} %</span>` : ''}</span></span>
+    <span style="--c:${CATS[f.k].c}">${miniColumnas(f.vals)}</span></button>`).join('')}</div>`;
+}
+
+/* ── Alertas y oportunidades ────────────────────────────────────────────── */
+function calcularAlertas() {
+  const out = [];
+  const hace60 = iso(sumaDias(hoy(), -60));
+  const compras = E.movs.filter((m) => m.tipo === 'compra' && esGasto(m));
+  // 1) Posibles cargos dobles: mismo comercio y monto a menos de 30 min
+  const porClave = {};
+  for (const m of compras.filter((x) => x.f >= hace60 && x.cat !== 'apuestas')) (porClave[`${m.g}|${m.m}|${m.f}`] = porClave[`${m.g}|${m.m}|${m.f}`] || []).push(m);
+  for (const ms of Object.values(porClave)) {
+    if (ms.length < 2) continue;
+    const ord = ms.sort((a, b) => (a.h || '').localeCompare(b.h || ''));
+    for (let i = 1; i < ord.length; i++) {
+      const a = minutosDe(ord[i - 1].h); const b = minutosDe(ord[i].h);
+      if (a != null && b != null && b - a <= 30 && ord[i].m >= 100) {
+        out.push({ nivel: 'mal', icono: 'i-alerta', titulo: `¿Cargo doble en ${ord[i].nombre}?`, texto: `${fmt2(ord[i].m)} dos veces el ${fDia(ord[i].f)} (${ord[i - 1].h} y ${ord[i].h}). Si sólo compraste una vez, reclama al banco.`, id: ord[i].id });
+        break;
+      }
+    }
+  }
+  // 2) Compras fuera de lo normal en ese comercio (últimos 60 días)
+  const porCom = agrupar(compras, 'g');
+  for (const x of porCom) {
+    if (x.n < 4) continue;
+    const viejos = x.movs.filter((m) => m.f < hace60).map((m) => m.m);
+    if (viejos.length < 3) continue;
+    const med = mediana(viejos);
+    for (const m of x.movs.filter((y) => y.f >= hace60)) {
+      if (m.m > med * 3 && m.m >= 300) { out.push({ nivel: 'aviso', icono: 'i-chispa', titulo: `Compra fuera de lo normal en ${m.nombre}`, texto: `${fmt(m.m)} el ${fDia(m.f)}; normalmente gastas ${fmt(med)} ahí.`, id: m.id }); break; }
+    }
+  }
+  // 3) Pagos que se repiten y subieron de precio
+  for (const r of pagosRecurrentes()) {
+    const ms = E.movs.filter((m) => m.g === r.g && esGasto(m)).sort((a, b) => b.f.localeCompare(a.f));
+    if (ms.length >= 3 && ms[0].m > ms[1].m * 1.08 && ms[0].m - ms[1].m >= 10) out.push({ nivel: 'aviso', icono: 'i-sube', titulo: `${r.nombre} subió de precio`, texto: `Antes ${fmt2(ms[1].m)}, ahora ${fmt2(ms[0].m)} (+${fmt(ms[0].m - ms[1].m)} cada vez).`, g: r.g });
+  }
+  // 4) Comercios nuevos este mes
+  const mesK = mesDe(iso(hoy()));
+  const nuevos = porCom.filter((x) => x.movs.every((m) => mesDe(m.f) === mesK));
+  if (nuevos.length) out.push({ nivel: '', icono: 'i-chispa', titulo: `${nuevos.length} ${nuevos.length === 1 ? 'lugar nuevo' : 'lugares nuevos'} este mes`, texto: `${nuevos.slice(0, 4).map((x) => x.movs[0].nombre).join(', ')}${nuevos.length > 4 ? '…' : ''} · ${fmt(nuevos.reduce((a, x) => a + x.total, 0))} en total.` });
+  // 5) Apuestas del mes contra su promedio
+  const apMes = suma(gastos(mesK + '-01').filter((m) => m.cat === 'apuestas'));
+  const apProm = [1, 2, 3].reduce((a, i) => a + suma(gastos(mesMas(mesK, -i) + '-01', mesMas(mesK, -i + 1) + '-01').filter((m) => m.cat === 'apuestas')), 0) / 3;
+  if (apMes > 0) out.push({ nivel: apMes > apProm * 1.2 ? 'mal' : 'aviso', icono: 'c-apuestas', titulo: `Apuestas este mes: ${fmt(apMes)}`, texto: apProm ? `Tu promedio es ${fmt(apProm)} al mes. ${apMes > apProm ? 'Vas por arriba.' : 'Vas por debajo, bien.'}` : 'Es nuevo respecto a los meses anteriores.' });
+  // 6) Presupuestos por categoría rebasados o a punto
+  for (const [c, lim] of Object.entries(E.aj.presupuestos || {})) {
+    const v = suma(gastos(mesK + '-01').filter((m) => m.cat === c));
+    const frac = hoy().getDate() / new Date(hoy().getFullYear(), hoy().getMonth() + 1, 0).getDate();
+    if (+lim > 0 && v > +lim) out.push({ nivel: 'mal', icono: 'c-' + c, titulo: `Te pasaste en ${CATS[c].n.toLowerCase()}`, texto: `${fmt(v)} de ${fmt(+lim)} este mes.` });
+    else if (+lim > 0 && v > +lim * Math.min(1, frac + 0.15)) out.push({ nivel: 'aviso', icono: 'c-' + c, titulo: `${CATS[c].n}: vas rápido`, texto: `Llevas ${fmt(v)} de ${fmt(+lim)} y apenas va el ${Math.round(frac * 100)} % del mes.` });
+  }
+  return out.sort((a, b) => ({ mal: 0, aviso: 1, '': 2 }[a.nivel] - { mal: 0, aviso: 1, '': 2 }[b.nivel]));
+}
+const minutosDe = (h) => (h ? +h.slice(0, 2) * 60 + +h.slice(3, 5) : null);
+
+/* Próximos cargos que se repiten (por el día del mes en que suelen caer) */
+function proximosCargos() {
+  const out = [];
+  for (const r of pagosRecurrentes()) {
+    const ms = E.movs.filter((m) => m.g === r.g && esGasto(m));
+    const diaTipico = Math.round(mediana(ms.map((m) => fecha(m.f).getDate())));
+    let f = new Date(hoy().getFullYear(), hoy().getMonth(), diaTipico);
+    if (f < hoy() || ms.some((m) => mesDe(m.f) === mesDe(iso(hoy())))) f = new Date(hoy().getFullYear(), hoy().getMonth() + 1, diaTipico);
+    if (difDias(hoy(), f) <= 35) out.push({ ...r, f: iso(f), monto: ms.sort((a, b) => b.f.localeCompare(a.f))[0].m });
+  }
+  return out.sort((a, b) => a.f.localeCompare(b.f));
+}
+
+function analisisAlertas() {
+  const al = calcularAlertas();
+  const prox = proximosCargos();
+  return `
+  <div class="seccion"><h2>Para revisar</h2><span class="texto-3 peq">${al.length} ${al.length === 1 ? 'aviso' : 'avisos'}</span></div>
+  ${al.map((a) => `<button class="tarjeta accion alerta ${a.nivel}" ${a.id ? `data-acc="detalle" data-id="${esc(a.id)}"` : a.g ? `data-acc="fichaComercio" data-g="${esc(a.g)}"` : ''}>
+    <span class="cat-ic" style="--c:${a.nivel === 'mal' ? 'var(--critico)' : a.nivel === 'aviso' ? 'var(--aviso)' : 'var(--acento)'}">${ic(a.icono)}</span>
+    <div><b>${esc(a.titulo)}</b><div class="texto-2 peq">${esc(a.texto)}</div></div></button>`).join('') || `<div class="tarjeta">${vacio('i-check', 'Todo en orden', 'No vemos cargos dobles, compras raras ni pagos que hayan subido.')}</div>`}
+  ${prox.length ? `<div class="seccion"><h2>Lo que viene</h2><span class="texto-3 peq">${fmt(prox.reduce((a, p) => a + p.monto, 0))} en 30 días</span></div>
+  <div class="tarjeta plana">${prox.map((p) => `<button class="fila" data-acc="fichaComercio" data-g="${esc(p.g)}"><span class="cat-ic" style="--c:${(CATS[p.cat] || CATS.otros).c}">${ic('c-' + p.cat)}</span>
+    <span class="cuerpo"><span class="t1">${esc(p.nombre)}</span><span class="t2">alrededor del ${esc(fDia(p.f))}</span></span><span class="monto num">${fmt(p.monto)}</span></button>`).join('')}</div>` : ''}`;
+}
+
+/* ── Tarjetas de crédito: corte y pago ──────────────────────────────────── */
+function cicloTarjeta(tj) {
+  const c = (E.aj.cortes || {})[tj];
+  if (!c || !+c.corte) return null;
+  const dia = Math.min(28, +c.corte);
+  const h = hoy();
+  let corte = new Date(h.getFullYear(), h.getMonth(), dia);
+  if (corte < h) corte = new Date(h.getFullYear(), h.getMonth() + 1, dia); // próximo corte
+  const anterior = new Date(corte.getFullYear(), corte.getMonth() - 1, dia);
+  const previo = new Date(corte.getFullYear(), corte.getMonth() - 2, dia);
+  const pagoDias = +c.pago || 20;
+  const enCurso = suma(gastos(iso(sumaDias(anterior, 1)), iso(sumaDias(corte, 1))).filter((m) => m.tj === tj));
+  const aPagar = suma(gastos(iso(sumaDias(previo, 1)), iso(sumaDias(anterior, 1))).filter((m) => m.tj === tj));
+  const fechaPago = sumaDias(anterior, pagoDias);
+  return { corte: iso(corte), enCurso, aPagar, fechaPago: iso(fechaPago), pagoPasado: fechaPago < h };
+}
+function seccionTarjetas() {
+  const tjs = Object.keys(E.aj.cortes || {}).filter((t) => cicloTarjeta(t));
+  if (!tjs.length) return '';
+  return `<div class="seccion"><h2>Tus tarjetas</h2><button class="enlace" data-acc="editarTarjetas">Ajustar</button></div>
+    <div class="tarjeta plana">${tjs.map((t) => { const c = cicloTarjeta(t); return `<button class="fila" data-acc="verTarjeta" data-tj="${esc(t)}">
+      <span class="cat-ic" style="--c:var(--texto-2)">${ic('i-tarjeta')}</span>
+      <span class="cuerpo"><span class="t1">${esc(nombreTarjeta(t))}</span><span class="t2">corta el ${esc(fDia(c.corte))} · ${c.pagoPasado ? 'pago del corte anterior: ya pasó' : `paga ${fmt(c.aPagar)} antes del ${esc(fDia(c.fechaPago))}`}</span></span>
+      <span class="monto num">${fmt(c.enCurso)}<small>en este corte</small></span></button>`; }).join('')}</div>`;
+}
+
+/* ── Extras para Ahorrar y Hábitos ──────────────────────────────────────── */
+function bloqueHorasYRegla(R, g) {
+  const hp = horaPorPeso(); const ing = ingresoMensual();
+  if (!ing) return `<div class="tarjeta dato"><span class="cat-ic" style="--c:var(--acento)">${ic('i-cartera')}</span><div><b>Dime cuánto ganas</b><div class="texto-2 peq">Con tu ingreso te muestro cuántas horas de trabajo te cuesta cada gasto y si cumples la regla 50/30/20.</div><button class="btn chico" style="margin-top:8px" data-acc="editarPago">Poner mi ingreso</button></div></div>`;
+  const porMes = suma(g) / R.meses;
+  const nec = suma(g.filter((m) => m.esencial === true)) / R.meses;
+  const gus = suma(g.filter((m) => m.esencial === false)) / R.meses;
+  const ahorro = Math.max(0, ing - porMes);
+  const pct = (v) => Math.round((v / ing) * 100);
+  const topHoras = agrupar(g.filter((m) => m.esencial === false), 'cat').slice(0, 3);
+  const barra = (v, meta, cls) => `<span class="meta-barra"><i class="${cls}" style="width:${Math.min(100, (v / ing) * 100).toFixed(1)}%"></i><em style="left:${meta}%"></em></span>`;
+  return `<div class="seccion"><h2>Lo que te cuesta en horas</h2></div>
+    <div class="tarjeta"><div class="cifra-m num">${horasTxt(porMes * hp)}</div>
+      <div class="texto-2 peq">es lo que trabajas cada mes para pagar tus gastos (${fmt(porMes)}), con ${+E.aj.horas_semana || 40} h a la semana.</div>
+      ${topHoras.map((x) => `<div class="fila-horas"><span>${esc(CATS[x.k].n)}</span><b class="num">${horasTxt((x.total / R.meses) * hp)}</b></div>`).join('')}
+    </div>
+    <div class="seccion"><h2>Regla 50/30/20</h2><span class="texto-3 peq">de lo que ganas</span></div>
+    <div class="tarjeta regla">
+      <div class="fila-regla"><span>Necesario <small>meta 50 %</small></span>${barra(nec, 50, 'p-nec')}<b class="num">${pct(nec)} %</b></div>
+      <div class="fila-regla"><span>Gustos <small>meta 30 %</small></span>${barra(gus, 30, 'p-gus')}<b class="num">${pct(gus)} %</b></div>
+      <div class="fila-regla"><span>Ahorro <small>meta 20 %</small></span>${barra(ahorro, 20, 'p-aho')}<b class="num">${pct(ahorro)} %</b></div>
+      <p class="peq texto-2" style="margin:10px 0 0">${pct(gus) > 30 ? `Tus gustos se llevan el ${pct(gus)} %; bajarlos al 30 % libera ${fmt(gus - ing * 0.3)} al mes.` : 'Tus gustos están dentro del 30 %.'} ${pct(ahorro) >= 20 ? 'Ahorras lo recomendado.' : `Para ahorrar el 20 % te faltan ${fmt(ing * 0.2 - ahorro)} al mes.`} Las transferencias no cuentan como necesario ni gusto.</p>
+    </div>`;
+}
+
+function histogramaTickets(g, R) {
+  const compras = g.filter((m) => m.tipo === 'compra');
+  const cortes = [[0, 50, 'Menos de $50'], [50, 150, '$50–150'], [150, 300, '$150–300'], [300, 600, '$300–600'], [600, 1200, '$600–1,200'], [1200, 3000, '$1,200–3,000'], [3000, Infinity, 'Más de $3,000']];
+  const filas = cortes.map(([a, b, n]) => { const ms = compras.filter((m) => m.m >= a && m.m < b); return { n, c: ms.length, t: suma(ms) }; });
+  const maxC = Math.max(1, ...filas.map((f) => f.c)); const tot = suma(compras) || 1;
+  return `<div class="seccion"><h2>De qué tamaño son tus compras</h2></div>
+    <div class="tarjeta"><div class="histo">${filas.map((f) => `<div class="fila-histo" data-tip="${esc(`<b>${f.n}</b> · ${f.c} compras · ${fmt(f.t)}`)}"><span>${esc(f.n)}</span>
+      <span class="pista-h"><i style="width:${((f.c / maxC) * 100).toFixed(1)}%"></i></span><b class="num">${Math.round(f.c / R.meses)}<small>/mes</small></b><em class="num">${Math.round((f.t / tot) * 100)} %</em></div>`).join('')}</div>
+      <p class="peq texto-2" style="margin:10px 0 0">Barras: cuántas compras al mes. A la derecha, qué parte del dinero se va en ese tamaño.</p></div>`;
 }
 
 /* ── Gráfica de columnas (SVG) ──────────────────────────────────────────── */
@@ -1292,7 +1595,7 @@ function hojaDetalle(id) {
       <input id="notaMov" value="${esc(m.nota)}" placeholder="Ej. cena con amigos" autocomplete="off"></label>
     <div class="texto-3 peq" style="margin:6px 2px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all">${esc(m.c)}</div>
     <div class="dos">
-      <button class="btn" data-acc="verComercio" data-g="${esc(m.g)}">Ver todos</button>
+      <button class="btn" data-acc="fichaComercio" data-g="${esc(m.g)}">Ficha del comercio</button>
       ${m.manual ? `<button class="btn peligro" data-acc="borrarManual" data-id="${esc(m.id)}">${ic('i-papelera')}Borrar</button>` : '<button class="btn primario" data-acc="cerrar">Listo</button>'}
     </div>`, () => guardarTextosDetalle(m));
 }
@@ -1411,6 +1714,7 @@ function hojaPago() {
       <option value="mensual" ${aj.frecuencia === 'mensual' ? 'selected' : ''}>Una vez al mes</option></select></label>
     <label class="campo" id="campoRef"><span>Un día en que cobraste</span><input id="ajRef" type="date" value="${esc(aj.pago_ref)}"><div class="ayuda">Cualquier pago pasado sirve; de ahí se cuentan los 14 días.</div></label>
     <label class="campo" id="campoDia"><span>Día del mes en que cobras</span><input id="ajDia" inputmode="numeric" value="${aj.pago_dia || 1}"></label>
+    <label class="campo"><span>Horas que trabajas a la semana</span><input id="ajHoras" inputmode="numeric" value="${+aj.horas_semana || 40}"><div class="ayuda">Para decirte cuántas horas de trabajo te cuesta cada gasto.</div></label>
     <label class="campo"><span>Meta de ahorro (% de cada pago)</span><input id="ajMeta" inputmode="numeric" value="${+aj.meta_ahorro || 0}"><div class="ayuda">Se aparta antes de calcular cuánto puedes gastar.</div></label>
     <button class="btn primario ancho" data-acc="guardarPago">Guardar</button>`);
   const sync = () => { const v = $('#ajFrec').value; $('#campoRef').hidden = v !== 'catorcenal'; $('#campoDia').hidden = v !== 'mensual'; };
@@ -1436,10 +1740,13 @@ function hojaPresupuestos() {
 
 function hojaTarjetas() {
   abrirHoja(`${cabHoja('Tarjetas y cuentas')}
-    <p class="texto-2 peq" style="margin-top:0">Ponles un nombre fácil de reconocer.</p>
+    <p class="texto-2 peq" style="margin-top:0">Aparecen solas con su primer correo. Ponles un nombre y, si es de crédito, su día de corte: en Inicio verás cuánto llevas en el corte y cuánto pagar.</p>
     ${E.tarjetasVistas.filter((t) => t !== 'EFECTIVO').map((t) => {
       const n = E.movs.filter((m) => m.tj === t).length;
-      return `<label class="campo"><span>Terminación ${esc(t)} · ${n} movimientos</span><input data-tj="${esc(t)}" value="${esc(E.aj.tarjetas[t] || '')}" placeholder="•••• ${esc(t)}" autocomplete="off"></label>`;
+      const c = (E.aj.cortes || {})[t] || {};
+      return `<div class="tarjeta-aj"><label class="campo"><span>Terminación ${esc(t)} · ${n} movimientos</span><input data-tj="${esc(t)}" value="${esc(E.aj.tarjetas[t] || '')}" placeholder="•••• ${esc(t)}" autocomplete="off"></label>
+        <div class="dos"><label class="campo"><span>Día de corte</span><input data-corte="${esc(t)}" inputmode="numeric" value="${esc(c.corte || '')}" placeholder="débito: vacío"></label>
+        <label class="campo"><span>Pagas a los … días</span><input data-pago="${esc(t)}" inputmode="numeric" value="${esc(c.pago || '')}" placeholder="20"></label></div></div>`;
     }).join('')}
     <button class="btn primario ancho" data-acc="guardarTarjetas">Guardar</button>`);
 }
@@ -1626,6 +1933,8 @@ const ACC = {
   pestanaAn: (d) => { E.an.vista = d.v; if ((d.v === 'habitos' || d.v === 'ahorro') && E.an.rango === 'todo') E.an.rango = '6m'; repintar(); },
   mesDia: (d) => { E.an.mesDia = mesMas(E.an.mesDia || mesDe(iso(hoy())), +d.d); repintar(); },
   verDia: (d) => hojaDia(d.f),
+  fichaComercio: (d) => { cerrarHojaSinGuardar(); hojaComercio(d.g); },
+  mesCmp: (d) => { E.an.cmp = mesMas(E.an.cmp || mesDe(iso(hoy())), +d.d); repintar(); },
   rango: (d) => { E.an.rango = d.v; if (d.v === 'mes') E.an.mes = mesDe(iso(hoy())); repintar(); },
   mesAn: (d) => { E.an.mes = mesMas(E.an.mes || mesDe(iso(hoy())), +d.d); repintar(); },
   revisar: () => { E.revTotal = Math.max(1, gruposPorRevisar().length); E.revPos = 0; hojaRevisar(0); },
@@ -1635,7 +1944,7 @@ const ACC = {
   editarPago: hojaPago,
   guardarPago: () => {
     const n = (s) => parseFloat(String(s).replace(/[$,\s]/g, '')) || 0;
-    Object.assign(E.aj, { pago_monto: n($('#ajMonto').value), frecuencia: $('#ajFrec').value, pago_ref: $('#ajRef').value || E.aj.pago_ref, pago_dia: Math.min(28, Math.max(1, n($('#ajDia').value) || 1)), meta_ahorro: Math.min(90, Math.max(0, n($('#ajMeta').value))) });
+    Object.assign(E.aj, { pago_monto: n($('#ajMonto').value), frecuencia: $('#ajFrec').value, pago_ref: $('#ajRef').value || E.aj.pago_ref, pago_dia: Math.min(28, Math.max(1, n($('#ajDia').value) || 1)), meta_ahorro: Math.min(90, Math.max(0, n($('#ajMeta').value))), horas_semana: Math.min(90, Math.max(1, n($('#ajHoras').value) || 40)) });
     guardarAjustes(); cerrarHoja(); repintar(); avisar('Guardado');
   },
   editarPresupuestos: hojaPresupuestos,
@@ -1645,7 +1954,13 @@ const ACC = {
   },
   editarTarjetas: hojaTarjetas,
   guardarTarjetas: () => {
-    document.querySelectorAll('[data-tj]').forEach((i) => { const v = i.value.trim(); if (v) E.aj.tarjetas[i.dataset.tj] = v; else delete E.aj.tarjetas[i.dataset.tj]; });
+    document.querySelectorAll('input[data-tj]').forEach((i) => { const v = i.value.trim(); if (v) E.aj.tarjetas[i.dataset.tj] = v; else delete E.aj.tarjetas[i.dataset.tj]; });
+    E.aj.cortes = E.aj.cortes || {};
+    document.querySelectorAll('[data-corte]').forEach((i) => {
+      const t = i.dataset.corte; const corte = Math.min(28, Math.max(0, parseInt(i.value, 10) || 0));
+      const pago = Math.min(60, Math.max(1, parseInt(document.querySelector(`[data-pago="${t}"]`).value, 10) || 20));
+      if (corte) E.aj.cortes[t] = { corte, pago }; else delete E.aj.cortes[t];
+    });
     guardarAjustes(); cerrarHoja(); repintar(); avisar('Nombres guardados');
   },
   editarReglas: hojaReglas,

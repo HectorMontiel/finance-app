@@ -428,3 +428,47 @@ details.tabla td:last-child, details.tabla th:last-child { text-align: right; fo
 .pista-signo i.neg { right: 50%; background: var(--critico); }
 .origen { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--texto-2); background: var(--sup-2); border-radius: 99px; padding: 5px 10px; margin-top: 10px; }
 .origen svg { width: 14px; height: 14px; }
+
+/* ── Comparar, tendencias, alertas, ficha, tarjetas ─────────────────────── */
+.chips.pestanas { margin: 0 -16px 2px; }
+.chip .globo { background: var(--critico); color: #fff; border-radius: 99px; font-size: 11px; min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 5px; }
+.chip.on .globo { background: var(--fondo); color: var(--texto); }
+.dos-cifras { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cifra-m { font: 700 26px/1.1 var(--fuente-titulo); letter-spacing: -.02em; margin-top: 4px; }
+.cambios { display: grid; gap: 4px; }
+.fila-cambio { display: grid; grid-template-columns: 104px 1fr 76px; gap: 8px; align-items: center; padding: 6px 0; text-align: left; font-size: 14px; }
+.fila-cambio .nom { color: var(--texto-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fila-cambio b { text-align: right; font-weight: 650; }
+.eje-d { position: relative; height: 12px; }
+.eje-d::after { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px; background: var(--texto-3); }
+.eje-d i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.eje-d i.mas { left: 50%; background: var(--critico); }
+.eje-d i.menos { right: 50%; background: var(--bien); }
+.fila.tend .cuerpo { min-width: 0; }
+svg.mini { width: 96px; height: 30px; stroke: none; fill: color-mix(in srgb, var(--c) 45%, var(--sup)); }
+svg.mini .ult { fill: var(--c); }
+.anio-scroll { overflow-x: auto; padding-bottom: 4px; }
+.anio-meses { display: grid; grid-template-columns: repeat(53, 11px); gap: 3px; font-size: 10px; color: var(--texto-3); margin-bottom: 4px; min-width: max-content; }
+.anio { display: grid; grid-template-rows: repeat(7, 11px); grid-auto-flow: column; grid-auto-columns: 11px; gap: 3px; min-width: max-content; }
+.anio span { border-radius: 3px; }
+.tarjeta.alerta { width: 100%; text-align: left; margin-top: 10px; }
+.tarjeta.alerta.mal { box-shadow: inset 3px 0 0 var(--critico), var(--sombra); }
+.tarjeta.alerta.aviso { box-shadow: inset 3px 0 0 var(--aviso), var(--sombra); }
+.mosaico.plano { box-shadow: none; background: var(--sup-2); }
+.fila-horas { display: flex; justify-content: space-between; font-size: 14px; color: var(--texto-2); padding: 8px 0 0; border-top: 1px solid var(--linea); margin-top: 8px; }
+.fila-regla { display: grid; grid-template-columns: 96px 1fr 44px; gap: 10px; align-items: center; font-size: 14px; margin-top: 10px; }
+.fila-regla:first-child { margin-top: 0; }
+.fila-regla small { display: block; color: var(--texto-3); font-size: 11px; }
+.fila-regla b { text-align: right; }
+.meta-barra { position: relative; height: 10px; background: var(--pista); border-radius: 99px; }
+.meta-barra i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 99px; }
+.meta-barra em { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--texto); opacity: .6; }
+.p-aho { background: var(--bien); }
+.histo { display: grid; gap: 8px; }
+.fila-histo { display: grid; grid-template-columns: 98px 1fr 50px 38px; gap: 8px; align-items: center; font-size: 13px; color: var(--texto-2); }
+.fila-histo b { text-align: right; color: var(--texto); font-weight: 650; }
+.fila-histo b small { font-weight: 500; color: var(--texto-3); font-size: 11px; }
+.fila-histo em { font-style: normal; text-align: right; color: var(--texto-3); }
+.pista-h { height: 10px; background: var(--pista); border-radius: 99px; overflow: hidden; }
+.pista-h i { display: block; height: 100%; background: var(--acento); border-radius: 99px; }
+.tarjeta-aj + .tarjeta-aj { border-top: 1px solid var(--linea); padding-top: 12px; }
