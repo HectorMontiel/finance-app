@@ -138,20 +138,34 @@ async function iniciar() {
 
   const q = new URLSearchParams(location.search);
   if (q.get('code') || q.get('error')) {
-    const ok = q.get('state') && q.get('state') === sessionStorage.getItem('mf_estado');
+    const estado = q.get('state') || '';
     history.replaceState(null, '', location.pathname);
-    if (q.get('error')) return pantallaBloqueo('No se dio el permiso en Google. Puedes intentarlo otra vez.');
-    if (!ok) return pantallaBloqueo('El inicio de sesión tardó demasiado. Intenta otra vez.');
+    if (q.get('error')) { guardar('mf_pareo', null); return pantallaBloqueo('No se dio el permiso en Google. Puedes intentarlo otra vez.'); }
+    // ¿Regresó a la misma ventana que pidió entrar? (computadora, Android, Safari normal)
+    const mio = estado && (estado === sessionStorage.getItem('mf_estado') || estado === leer('mf_pareo'));
     pintarCargando('Entrando…');
     try {
-      const r = await llamar('entrar', { code: q.get('code'), redirect_uri: URL_APP });
-      const { error } = await sb.auth.verifyOtp({ token_hash: r.token_hash, type: 'magiclink' });
-      if (error) throw error;
+      if (mio) {
+        const r = await llamar('entrar', { code: q.get('code'), redirect_uri: URL_APP });
+        const { error } = await sb.auth.verifyOtp({ token_hash: r.token_hash, type: 'magiclink' });
+        if (error) throw error;
+        guardar('mf_pareo', null);
+      } else if (/^[a-f0-9]{32}$/.test(estado)) {
+        // iPhone con la app instalada: Google se abrió en otra ventana. Se deja el pase para la app.
+        await llamar('entrar', { code: q.get('code'), redirect_uri: URL_APP, pareo: estado });
+        return pantallaVuelveALaApp();
+      } else {
+        return pantallaBloqueo('El inicio de sesión tardó demasiado. Intenta otra vez.');
+      }
     } catch (e) { return pantallaBloqueo(e.message || 'No se pudo entrar.'); }
   }
 
   const { data: { session } } = await sb.auth.getSession();
-  if (!session) return pantallaBloqueo();
+  if (!session) {
+    const pase = leer('mf_pareo');
+    if (pase && Date.now() - (+leer('mf_pareo_t') || 0) < 10 * 60_000) return esperarPase(pase);
+    return pantallaBloqueo();
+  }
   E.usuario = session.user;
   pintarEsqueleto();
   try { await cargarTodo(); } catch (e) { return pantallaError(e); }
@@ -162,13 +176,79 @@ async function iniciar() {
 }
 
 function entrarConGoogle() {
-  const estado = Array.from(crypto.getRandomValues(new Uint32Array(3))).join('');
+  const estado = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
   sessionStorage.setItem('mf_estado', estado);
+  guardar('mf_pareo', estado);
+  guardar('mf_pareo_t', String(Date.now()));
   const p = new URLSearchParams({
     client_id: GOOGLE_ID, redirect_uri: URL_APP, response_type: 'code', scope: ALCANCES,
     access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state: estado,
   });
-  location.href = `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
+  // En la app instalada, Google se abre aparte y la app espera aquí su pase.
+  if (esApp()) {
+    const w = window.open(url, '_blank');
+    if (w) return esperarPase(estado);
+  }
+  location.href = url;
+}
+
+/* La app instalada espera a que la ventana de Google deje el pase. */
+let esperaT = null;
+function esperarPase(estado) {
+  $('#barra').hidden = true; $('#fab').hidden = true;
+  $('#app').classList.add('sin-barra');
+  $('#app').innerHTML = `<div class="bloqueo">
+    <img class="logo" src="icono.svg" alt="">
+    <h1>Termina en Google</h1>
+    <ol class="pasos">
+      <li><span>Elige tu cuenta y da el permiso de Gmail en la ventana que se abrió.</span></li>
+      <li><span>Cuando veas <b>«Listo, ya puedes volver»</b>, cierra esa ventana con la <b>X</b> de arriba.</span></li>
+      <li><span>Esta pantalla entra sola en cuanto regreses.</span></li>
+    </ol>
+    <div class="pildora" style="align-self:flex-start;margin-bottom:18px">${ic('i-actualizar', 'class="gira"')}Esperando a Google…</div>
+    <button class="btn primario ancho" data-acc="revisarPase">Ya terminé</button>
+    <button class="btn ancho" style="margin-top:10px" data-acc="cancelarPase">Cancelar</button>
+  </div>`;
+  clearInterval(esperaT);
+  const inicio = Date.now();
+  esperaT = setInterval(() => {
+    if (Date.now() - inicio > 10 * 60_000) { clearInterval(esperaT); guardar('mf_pareo', null); pantallaBloqueo('Se acabó el tiempo. Intenta otra vez.'); return; }
+    revisarPase(estado);
+  }, 2500);
+}
+let revisandoPase = false;
+async function revisarPase(estado = leer('mf_pareo')) {
+  if (!estado || revisandoPase) return;
+  revisandoPase = true;
+  try {
+    const r = await llamar('entrar', { accion: 'recoger', pareo: estado });
+    if (r.token_hash) {
+      clearInterval(esperaT);
+      guardar('mf_pareo', null);
+      pintarCargando('Entrando…');
+      const { error } = await sb.auth.verifyOtp({ token_hash: r.token_hash, type: 'magiclink' });
+      if (error) throw error;
+      location.replace(location.pathname);
+    }
+  } catch (e) {
+    clearInterval(esperaT); guardar('mf_pareo', null);
+    pantallaBloqueo(e.message || 'No se pudo entrar.');
+  } finally { revisandoPase = false; }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && leer('mf_pareo') && !E.usuario) revisarPase(); });
+
+/* Ventana de Google (otra que la app): ya se dejó el pase. */
+function pantallaVuelveALaApp() {
+  $('#barra').hidden = true; $('#fab').hidden = true;
+  $('#app').classList.add('sin-barra');
+  $('#app').innerHTML = `<div class="bloqueo centro">
+    <img class="logo" src="icono.svg" alt="" style="margin:0 auto 18px">
+    <h1>Listo, ya puedes volver</h1>
+    <p>Cierra esta ventana con la <b>X</b> de arriba y regresa a <b>Mis Finanzas</b>: entrará sola.</p>
+    <button class="btn primario ancho" data-acc="cerrarVentana">Cerrar esta ventana</button>
+  </div>`;
+  setTimeout(() => { try { window.close(); } catch { /* iOS no siempre deja */ } }, 1500);
 }
 
 async function cargarTodo() {
@@ -1573,6 +1653,9 @@ const ACC = {
   editarTema: hojaTema,
   ponerTema: (d) => { E.aj.tema = d.v; guardar('mf_tema', d.v); aplicarTema(d.v); guardarAjustes(); cerrarHoja(); repintar(); },
   entrarGoogle: () => entrarConGoogle(),
+  revisarPase: () => revisarPase(),
+  cancelarPase: () => { clearInterval(esperaT); guardar('mf_pareo', null); pantallaBloqueo(); },
+  cerrarVentana: () => { try { window.close(); } catch { /* nada */ } avisar('Toca la X de arriba para cerrar'); },
   conectarGmail: () => hojaConectarGmail(),
   invitar: () => hojaInvitar(),
   copiarEnlace: async () => { try { await navigator.clipboard.writeText(URL_APP); avisar('Enlace copiado'); } catch { avisar('No se pudo copiar'); } },

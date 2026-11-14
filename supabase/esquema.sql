@@ -98,3 +98,12 @@ create table if not exists public.ia_uso (
 alter table public.ia_uso enable row level security;
 revoke all on public.ia_uso from anon, authenticated;
 alter table public.perfiles add column if not exists ia_inicial boolean not null default false;
+
+-- v5: «pase» para entrar desde la app instalada en iPhone (Google se abre en otra ventana).
+create table if not exists public.pareos (
+  id text primary key,          -- número al azar que sólo conoce la app que pidió entrar
+  token_hash text not null,
+  creado timestamptz not null default now()
+);
+alter table public.pareos enable row level security;
+revoke all on public.pareos from anon, authenticated;

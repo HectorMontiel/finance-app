@@ -27,7 +27,18 @@ async function buscarUsuario(email: string): Promise<string | null> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
-    const { code, redirect_uri } = await req.json();
+    const { code, redirect_uri, pareo, accion } = await req.json();
+    const pareoValido = typeof pareo === "string" && /^[a-f0-9]{32}$/.test(pareo);
+
+    // La app instalada pregunta si ya está su pase (Google se abrió en otra ventana del iPhone)
+    if (accion === "recoger") {
+      if (!pareoValido) return json({ error: "Solicitud no válida" }, 400);
+      await sb.from("pareos").delete().lt("creado", new Date(Date.now() - 10 * 60_000).toISOString());
+      const { data } = await sb.from("pareos").select("token_hash").eq("id", pareo).maybeSingle();
+      if (!data) return json({ pendiente: true });
+      await sb.from("pareos").delete().eq("id", pareo);
+      return json({ token_hash: data.token_hash });
+    }
     if (!code || !PERMITIDOS.includes(redirect_uri)) return json({ error: "Solicitud no válida" }, 400);
     const secreto = Deno.env.get("GOOGLE_CLIENT_SECRET");
     if (!secreto) return json({ error: "Falta configurar GOOGLE_CLIENT_SECRET en Supabase" }, 500);
@@ -60,6 +71,11 @@ Deno.serve(async (req) => {
 
     const link = await sb.auth.admin.generateLink({ type: "magiclink", email });
     if (link.error) return json({ error: link.error.message }, 500);
+    // Si el regreso de Google cayó en otra ventana, se guarda el pase para que la app lo recoja.
+    if (pareoValido) {
+      await sb.from("pareos").upsert({ id: pareo, token_hash: link.data.properties.hashed_token, creado: new Date().toISOString() });
+      return json({ pareo: true, gmail: !!tok });
+    }
     return json({ token_hash: link.data.properties.hashed_token, gmail: !!tok });
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 500);
