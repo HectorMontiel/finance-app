@@ -83,7 +83,9 @@ function normComercio(c) {
 const SUPA_URL = 'https://otxgrrczeznexxobamtv.supabase.co';
 const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im90eGdycmN6ZXpuZXh4b2JhbXR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2MTk4NTIsImV4cCI6MjExMDE5NTg1Mn0.eVS16h-Wc4TwSTWzw3CiWxmMFC0l9jJc2hz1gwC3YEw'; // llave pública: sólo deja ver lo propio de cada quien (RLS)
 const GOOGLE_ID = '108907084207-t72q2gh330g4pajgad82ulflmonqpd6r.apps.googleusercontent.com';
-const ALCANCES = 'openid email profile https://www.googleapis.com/auth/gmail.readonly';
+// Entrar sólo pide nombre y correo (Google no muestra aviso). Gmail se conecta aparte, una sola vez.
+const ALCANCES_ENTRAR = 'openid email profile';
+const ALCANCES_GMAIL = 'openid email profile https://www.googleapis.com/auth/gmail.readonly';
 const URL_APP = location.origin + location.pathname;
 const sb = window.supabase.createClient(SUPA_URL, SUPA_ANON, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: 'mf_sesion' },
@@ -175,14 +177,14 @@ async function iniciar() {
   if (E.perfil.gmail_conectado && (!E.perfil.historial_completo || E.perfil.sync_pendientes > 0)) sincronizarAhora(true);
 }
 
-function entrarConGoogle() {
+function entrarConGoogle(conGmail = false) {
   const estado = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
   sessionStorage.setItem('mf_estado', estado);
   guardar('mf_pareo', estado);
   guardar('mf_pareo_t', String(Date.now()));
   const p = new URLSearchParams({
-    client_id: GOOGLE_ID, redirect_uri: URL_APP, response_type: 'code', scope: ALCANCES,
-    access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state: estado,
+    client_id: GOOGLE_ID, redirect_uri: URL_APP, response_type: 'code', scope: conGmail ? ALCANCES_GMAIL : ALCANCES_ENTRAR,
+    access_type: conGmail ? 'offline' : 'online', prompt: conGmail ? 'consent' : 'select_account', include_granted_scopes: 'true', state: estado,
   });
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
   // En la app instalada, Google se abre aparte y la app espera aquí su pase.
@@ -1514,8 +1516,8 @@ function pintarProgreso() {
 function hojaConectarGmail() {
   abrirHoja(`${cabHoja('Conecta tu Gmail')}
     <p class="texto-2" style="margin-top:0">Mis Finanzas lee <b>sólo</b> los avisos de Santander (compras, transferencias, depósitos y retiros). Nunca envía ni borra correos.</p>
-    <p class="texto-3 peq">Google mostrará «Google no verificó esta app»: toca <b>Configuración avanzada</b> → <b>Ir a Mis Finanzas</b> y marca el permiso de Gmail.</p>
-    <button class="btn primario ancho" data-acc="entrarGoogle">Conectar con Google</button>`);
+    <p class="texto-3 peq">Se hace <b>una sola vez</b>. Google mostrará «no ha verificado esta aplicación» porque es una app personal: toca <b>Configuración avanzada</b> → <b>Ir a…</b> y marca el permiso de Gmail. No se te vuelve a pedir.</p>
+    <button class="btn primario ancho" data-acc="conectarGmailYa">Conectar Gmail</button>`);
 }
 
 function hojaInvitar() {
@@ -1565,8 +1567,7 @@ function pantallaBloqueo(error) {
     <p>Ve en qué se va tu dinero sin capturar nada: la app lee los avisos de Santander que llegan a tu Gmail y una IA clasifica cada gasto.</p>
     <ol class="pasos">
       <li><span>Entra con tu cuenta de Google <b>una sola vez</b>; queda guardada.</span></li>
-      <li><span>Da permiso de <b>sólo lectura</b> a tu Gmail. Nunca envía ni borra correos.</span></li>
-      <li><span>Google dirá «no verificó esta app»: toca <b>Configuración avanzada → Ir a Mis Finanzas</b>.</span></li>
+      <li><span>Si es tu primera vez, conectas tu Gmail (sólo lectura) y listo: no se vuelve a pedir.</span></li>
     </ol>
     ${error ? `<p style="color:var(--critico);margin:-4px 0 14px">${esc(error)}</p>` : ''}
     <button class="btn primario ancho" data-acc="entrarGoogle">${ICONO_G}Entrar con Google</button>
@@ -1652,7 +1653,8 @@ const ACC = {
   exportar: exportarCSV,
   editarTema: hojaTema,
   ponerTema: (d) => { E.aj.tema = d.v; guardar('mf_tema', d.v); aplicarTema(d.v); guardarAjustes(); cerrarHoja(); repintar(); },
-  entrarGoogle: () => entrarConGoogle(),
+  entrarGoogle: () => entrarConGoogle(false),
+  conectarGmailYa: () => entrarConGoogle(true),
   revisarPase: () => revisarPase(),
   cancelarPase: () => { clearInterval(esperaT); guardar('mf_pareo', null); pantallaBloqueo(); },
   cerrarVentana: () => { try { window.close(); } catch { /* nada */ } avisar('Toca la X de arriba para cerrar'); },
