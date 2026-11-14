@@ -1,6 +1,6 @@
 // Mis Finanzas — funciona sin red con lo último que bajó.
-const V = 'mf-4';
-const BASE = ['./', 'index.html', 'app.css?v=4', 'app.js?v=4', 'vendor/supabase.js?v=4', 'icono.svg', 'icono-180.png', 'manifest.webmanifest'];
+const V = 'mf-5';
+const BASE = ['./', 'index.html', 'app.css?v=5', 'app.js?v=5', 'vendor/supabase.js?v=5', 'icono.svg', 'icono-180.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(V).then((c) => c.addAll(BASE)).then(() => self.skipWaiting()));

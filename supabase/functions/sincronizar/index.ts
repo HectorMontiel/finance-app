@@ -6,7 +6,6 @@ import { CORS, type Mov, aTexto, categorizarRegla, claveDe, consultaGmail, desci
 
 const URL_SB = Deno.env.get("SUPABASE_URL")!;
 const sb = createClient(URL_SB, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
-const CATS = ["super", "comida", "transporte", "suscripciones", "entretenimiento", "apuestas", "salud", "servicios", "compras", "viajes", "otros"];
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /* ── Google ─────────────────────────────────────────────────────────────── */
@@ -93,24 +92,44 @@ function duplicadoDe(x: Mov, previos: Mov[]): Mov | null {
 }
 
 /* ── Diccionario automático ─────────────────────────────────────────────── */
-async function clasificarConIA(pendientes: { clave: string; ejemplo: string }[]): Promise<Record<string, string>> {
+// Cada comercio se clasifica UNA vez y queda para todos. La IA recibe tandas de hasta 80
+// comercios por llamada; si falla, la clave queda con la regla y se reintenta de noche.
+const SUBS: Record<string, string[]> = {
+  super: ["supermercado", "conveniencia", "mayoreo", "mercado o tienda local", "panadería o carnicería"],
+  comida: ["restaurante", "bar o antro", "café", "comida rápida", "taquería o antojitos", "a domicilio", "postres"],
+  transporte: ["gasolina", "apps de viaje", "estacionamiento", "casetas", "transporte público", "mantenimiento de auto"],
+  suscripciones: ["streaming", "música", "software o IA", "gimnasio", "otra suscripción"],
+  entretenimiento: ["cine", "eventos y conciertos", "videojuegos", "actividades y paseos"],
+  apuestas: ["apuestas deportivas", "casino"],
+  salud: ["farmacia", "médico", "dentista", "laboratorio", "óptica"],
+  servicios: ["luz, agua o gas", "teléfono e internet", "renta y hogar", "seguros", "escuela", "gobierno", "cuidado personal", "lavandería"],
+  compras: ["ropa y calzado", "electrónica", "hogar y ferretería", "tienda en línea", "departamental", "regalos y flores", "mascotas", "belleza"],
+  viajes: ["hospedaje", "vuelos", "agencia o tour"],
+  otros: ["persona", "no identificado"],
+};
+const ESENCIAL_POR_DEFECTO: Record<string, boolean> = { super: true, transporte: true, salud: true, servicios: true, comida: false, suscripciones: false, entretenimiento: false, apuestas: false, compras: false, viajes: false, otros: false };
+
+interface Clasif { cat: string; sub?: string; esencial?: boolean; nombre?: string; confianza?: number }
+
+async function clasificarConIA(lote: { clave: string; ejemplo: string; pista: string }[]): Promise<Record<string, Clasif> | null> {
   const llave = Deno.env.get("GEMINI_API_KEY");
-  if (!llave || !pendientes.length) return {};
-  const lista = pendientes.map((p, i) => `${i}. ${p.ejemplo}`).join("\n");
-  const prompt = `Eres un clasificador de gastos de tarjetas bancarias en México. Para cada comercio (texto tal cual llega en el estado de cuenta, puede venir truncado o con prefijos de pasarelas como MERCADOPAGO*, CLIP MX*, NETPAY*), elige UNA categoría:
-super = supermercado, tienda de conveniencia, abarrotes, carnicería, panadería, mercado
-comida = restaurante, bar, antro, café, taquería, comida rápida, comida a domicilio
-transporte = gasolina, Uber/DiDi, taxi, estacionamiento, casetas, autobús, lavado de auto
-suscripciones = streaming, apps, software, servicios digitales, gimnasio
-entretenimiento = cine, conciertos, boletos, videojuegos, eventos, parques
-apuestas = casas de apuestas y casinos
-salud = farmacia, médico, dentista, laboratorio, óptica
-servicios = luz, agua, teléfono, internet, seguros, escuela, renta, trámites de gobierno, lavandería, estética
-compras = ropa, tiendas departamentales, electrónica, Amazon, Mercado Libre, ferretería, regalos, flores
-viajes = hoteles, Airbnb, aerolíneas, agencias de viaje
-otros = sólo si de verdad no hay forma de saberlo
-Si es un nombre de persona (pago a alguien por Mercado Pago) y no hay pista, usa "otros".
-Responde SOLO JSON: un arreglo con objetos {"i": número, "cat": categoría}.
+  if (!llave || !lote.length) return null;
+  const guia = Object.entries(SUBS).map(([c, s]) => `${c}: ${s.join(" | ")}`).join("\n");
+  const lista = lote.map((p, i) => `${i}. ${p.ejemplo}${p.pista !== "otros" ? ` (pista: ${p.pista})` : ""}`).join("\n");
+  const prompt = `Clasificas gastos de tarjetas bancarias en México (Santander). Cada línea es un comercio tal cual aparece en el aviso del banco; puede venir truncado o con prefijos de pasarelas de pago (MERCADOPAGO*, CLIP MX*, NETPAY*, CONEKTA*, BPK*, SQ*, LKL*). La «pista» es una regla automática que puede estar mal.
+
+Categorías y subcategorías permitidas (usa exactamente estos textos):
+${guia}
+
+Para cada comercio responde:
+- cat: una categoría de la lista.
+- sub: una subcategoría de esa categoría.
+- esencial: true si es un gasto necesario (súper, gasolina, farmacia, servicios, renta, escuela), false si es un gusto o algo evitable (restaurantes, bares, antojos, apuestas, entretenimiento, ropa, gadgets).
+- nombre: nombre limpio y corto del comercio como lo diría una persona (ej. "OXXO", "Starbucks", "Taquería El Pastor"); sin prefijos de pasarela ni números de sucursal.
+- confianza: 0 a 1, qué tan seguro estás.
+Si parece nombre de una persona (pago por Mercado Pago a alguien) y no hay más pistas: cat "otros", sub "persona".
+
+Responde SOLO un arreglo JSON de objetos {"i","cat","sub","esencial","nombre","confianza"}.
 
 ${lista}`;
   try {
@@ -118,41 +137,53 @@ ${lista}`;
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json" } }),
     });
-    if (!r.ok) return {};
+    if (!r.ok) return null;
     const j = await r.json();
     const arr = JSON.parse(j.candidates?.[0]?.content?.parts?.[0]?.text || "[]");
-    const out: Record<string, string> = {};
-    for (const x of arr) if (pendientes[x.i] && CATS.includes(x.cat)) out[pendientes[x.i].clave] = x.cat;
+    const out: Record<string, Clasif> = {};
+    for (const x of Array.isArray(arr) ? arr : []) {
+      const p = lote[x.i];
+      if (!p || !SUBS[x.cat]) continue;
+      out[p.clave] = {
+        cat: x.cat,
+        sub: SUBS[x.cat].includes(x.sub) ? x.sub : undefined,
+        esencial: typeof x.esencial === "boolean" ? x.esencial : ESENCIAL_POR_DEFECTO[x.cat],
+        nombre: typeof x.nombre === "string" ? x.nombre.slice(0, 40) : undefined,
+        confianza: typeof x.confianza === "number" ? Math.max(0, Math.min(1, x.confianza)) : undefined,
+      };
+    }
     return out;
-  } catch { return {}; }
+  } catch { return null; }
 }
 
-/** Pone en el diccionario las claves que aún no tiene: reglas primero, la IA para el resto. */
-async function completarDiccionario(movs: { clave: string; c: string; tipo: string }[]) {
-  const compras = movs.filter((m) => m.tipo === "compra" && m.clave.startsWith("C:"));
-  const unicas = new Map<string, string>();
-  for (const m of compras) if (!unicas.has(m.clave)) unicas.set(m.clave, m.c);
-  if (!unicas.size) return;
-  const claves = [...unicas.keys()];
-  const ya = new Set<string>();
-  for (let i = 0; i < claves.length; i += 200) {
-    const { data } = await sb.from("diccionario").select("clave").in("clave", claves.slice(i, i + 200));
-    for (const d of data || []) ya.add(d.clave);
+/** Manda a la IA, en tandas, las claves que aún no ha visto. Devuelve cuántas clasificó. */
+async function pasarPorIA(pendientes: { clave: string; ejemplo: string; pista: string }[], maxLlamadas: number): Promise<number> {
+  let hechas = 0;
+  for (let i = 0, llamadas = 0; i < pendientes.length && llamadas < maxLlamadas; i += 80, llamadas++) {
+    const lote = pendientes.slice(i, i + 80);
+    let r = await clasificarConIA(lote);
+    if (!r) { await espera(12000); r = await clasificarConIA(lote); } // límite por minuto del plan gratis
+    const filas = lote.map((p) => {
+      const c = r?.[p.clave];
+      return c
+        ? { clave: p.clave, cat: c.cat, sub: c.sub ?? null, esencial: c.esencial ?? null, nombre: c.nombre ?? null, confianza: c.confianza ?? null, fuente: "ia", ia: true, ejemplo: p.ejemplo }
+        : { clave: p.clave, cat: p.pista, fuente: "regla", ia: false, ejemplo: p.ejemplo, esencial: ESENCIAL_POR_DEFECTO[p.pista] ?? null };
+    });
+    // Los que la IA no devolvió suman un intento (se reintentan de noche, máximo 3 veces)
+    const { data: previos } = await sb.from("diccionario").select("clave,intentos").in("clave", lote.map((p) => p.clave));
+    const intentos = Object.fromEntries((previos || []).map((x) => [x.clave, x.intentos]));
+    await sb.from("diccionario").upsert(filas.map((f) => (f.ia ? f : { ...f, intentos: (intentos[f.clave] || 0) + 1 })), { onConflict: "clave" });
+    hechas += filas.filter((f) => f.ia).length;
+    if (!r) break; // la IA no responde: no insistir en esta pasada
   }
-  const nuevas = claves.filter((k) => !ya.has(k));
-  const filas: any[] = [];
-  const paraIA: { clave: string; ejemplo: string }[] = [];
-  for (const k of nuevas) {
-    const cat = categorizarRegla(unicas.get(k)!);
-    if (cat !== "otros") filas.push({ clave: k, cat, fuente: "regla", ejemplo: unicas.get(k) });
-    else paraIA.push({ clave: k, ejemplo: unicas.get(k)! });
-  }
-  for (let i = 0; i < paraIA.length && i < 240; i += 60) {
-    const tanda = paraIA.slice(i, i + 60);
-    const r = await clasificarConIA(tanda);
-    for (const p of tanda) if (r[p.clave]) filas.push({ clave: p.clave, cat: r[p.clave], fuente: "ia", ejemplo: p.ejemplo });
-  }
-  if (filas.length) await sb.from("diccionario").upsert(filas, { onConflict: "clave", ignoreDuplicates: true });
+  return hechas;
+}
+
+/** Pasada nocturna: claves que la IA no pudo ver (máx. 3 intentos, 4 llamadas por noche). */
+async function repasoNocturno() {
+  const { data } = await sb.from("diccionario").select("clave,ejemplo,cat").eq("ia", false).lt("intentos", 3).limit(320);
+  if (!data?.length) return 0;
+  return pasarPorIA(data.map((d) => ({ clave: d.clave, ejemplo: d.ejemplo || d.clave.slice(2), pista: d.cat })), 4);
 }
 
 /* ── Un usuario ─────────────────────────────────────────────────────────── */
@@ -207,7 +238,6 @@ async function sincronizarUsuario(uid: string, lote: number) {
     estados.push({ user_id: uid, msg_id: m.id, estado: "ok" });
   }
 
-  await completarDiccionario(guardar as any);
   if (guardar.length) {
     const filas = guardar.map((m) => ({ user_id: uid, id: m.id, f: m.f, h: m.h || null, m: m.m, tipo: m.tipo, c: m.c, tj: m.tj || null, clave: m.clave!, cat_auto: m.cat_auto || null, fmt: m.fmt || null, extra: m.extra || null }));
     const { error } = await sb.from("movimientos").upsert(filas, { onConflict: "user_id,id", ignoreDuplicates: true });
@@ -222,31 +252,54 @@ async function sincronizarUsuario(uid: string, lote: number) {
   return { nuevos: guardar.length, pendientes, revisados: correos.length, total_correos: ids.length };
 }
 
-/* Claves viejas que quedaron sin categoría (la IA falló o no había llave): reintento. */
-async function repasarSinCategoria(uid: string) {
-  const { data } = await sb.from("movimientos").select("clave,c,tipo").eq("user_id", uid).eq("tipo", "compra").eq("cat_auto", "otros").limit(1000);
-  if (data?.length) await completarDiccionario(data);
+/** Comercios del usuario que aún no están en el diccionario: se clasifican juntos, en tandas de 80. */
+async function clasificarUsuario(uid: string, maxLlamadas: number) {
+  const movs: { clave: string; c: string; tipo: string }[] = [];
+  for (let desde = 0; ; desde += 1000) {
+    const { data } = await sb.from("movimientos").select("clave,c,tipo").eq("user_id", uid).eq("tipo", "compra").range(desde, desde + 999);
+    movs.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  const unicas = new Map<string, string>();
+  for (const m of movs) if (!unicas.has(m.clave)) unicas.set(m.clave, m.c);
+  const claves = [...unicas.keys()];
+  const ya = new Set<string>();
+  for (let i = 0; i < claves.length; i += 200) {
+    const { data } = await sb.from("diccionario").select("clave").in("clave", claves.slice(i, i + 200));
+    for (const d of data || []) ya.add(d.clave);
+  }
+  const nuevas = claves.filter((k) => !ya.has(k)).map((k) => ({ clave: k, ejemplo: unicas.get(k)!, pista: categorizarRegla(unicas.get(k)!) }));
+  const hechas = nuevas.length ? await pasarPorIA(nuevas, maxLlamadas) : 0;
+  return { clasificados: hechas, restantes: Math.max(0, nuevas.length - Math.min(nuevas.length, maxLlamadas * 80)) };
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
     if (req.headers.get("x-cron") && req.headers.get("x-cron") === Deno.env.get("CRON_SECRET")) {
+      const cuerpo = await req.json().catch(() => ({}));
+      if (cuerpo.accion === "repaso") return json({ repaso: await repasoNocturno() });
       const t0 = Date.now();
       const { data: us } = await sb.from("perfiles").select("user_id").eq("gmail_conectado", true).order("ultima_sync", { ascending: true, nullsFirst: true });
       const hechos: unknown[] = [];
       for (const u of us || []) {
         if (Date.now() - t0 > 100_000) break;
-        try { hechos.push(await sincronizarUsuario(u.user_id, 60)); } catch (e) { hechos.push({ error: String(e) }); }
+        try {
+          const r = await sincronizarUsuario(u.user_id, 60);
+          if (!r.error && r.nuevos) await clasificarUsuario(u.user_id, 1); // sólo si llegó algo nuevo
+          hechos.push(r);
+        } catch (e) { hechos.push({ error: String(e) }); }
       }
-      return json({ usuarios: hechos.length });
+      // Una vez por noche (3 a. m. de México): lo que la IA no pudo ver.
+      const repaso = new Date().getUTCHours() === 9 ? await repasoNocturno() : 0;
+      return json({ usuarios: hechos.length, repaso });
     }
     const jwt = (req.headers.get("Authorization") || "").replace("Bearer ", "");
     const { data: u } = await sb.auth.getUser(jwt);
     if (!u?.user) return json({ error: "Inicia sesión" }, 401);
-    const r = await sincronizarUsuario(u.user.id, 100);
-    if (!r.error && !r.pendientes) await repasarSinCategoria(u.user.id);
-    return json(r);
+    const { accion } = await req.json().catch(() => ({}));
+    if (accion === "clasificar") return json(await clasificarUsuario(u.user.id, 2));
+    return json(await sincronizarUsuario(u.user.id, 100));
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 500);
   }

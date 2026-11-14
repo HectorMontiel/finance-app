@@ -80,3 +80,11 @@ revoke all on public.tokens, public.correos from authenticated;
 
 -- v2: se lista todo el correo hasta terminar el historial; luego sólo lo reciente.
 alter table public.perfiles add column if not exists historial_completo boolean not null default false;
+
+-- v3: el diccionario guarda más detalle para análisis y para saber quién clasificó.
+alter table public.diccionario add column if not exists sub text;           -- subcategoría (p. ej. «bar», «gasolina»)
+alter table public.diccionario add column if not exists esencial boolean;   -- necesario (true) o gusto (false)
+alter table public.diccionario add column if not exists nombre text;        -- nombre limpio del comercio
+alter table public.diccionario add column if not exists confianza real;     -- 0..1 según la IA
+alter table public.diccionario add column if not exists ia boolean not null default false; -- ya lo vio la IA
+alter table public.diccionario add column if not exists intentos int not null default 0;

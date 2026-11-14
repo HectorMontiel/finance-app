@@ -370,3 +370,61 @@ details.tabla td:last-child, details.tabla th:last-child { text-align: right; fo
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 .gira { animation: girar 1s linear infinite; }
 .btn svg { width: 20px; height: 20px; }
+
+/* ── Análisis a fondo ───────────────────────────────────────────────────── */
+.pestanas { margin-bottom: 2px; }
+.pestanas button { font-weight: 600; }
+.calendario { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.calendario .cab { text-align: center; font-size: 11px; color: var(--texto-3); font-weight: 600; padding-bottom: 2px; }
+.dia-cal { aspect-ratio: 1 / 1.05; border-radius: 9px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start; padding: 4px 5px; min-width: 0; }
+.dia-cal b { font-size: 11px; font-weight: 600; color: var(--texto-2); }
+.dia-cal small { font-size: 10px; font-weight: 650; font-variant-numeric: tabular-nums; align-self: flex-end; color: var(--texto); }
+.dia-cal.hoy { box-shadow: inset 0 0 0 2px var(--texto); }
+.dia-cal.cf { background: transparent; box-shadow: inset 0 0 0 1px var(--linea); }
+.dia-cal.cf b { color: var(--texto-3); }
+.c0 { background: var(--pista); }
+.c1 { background: color-mix(in srgb, var(--acento) 16%, var(--sup)); }
+.c2 { background: color-mix(in srgb, var(--acento) 32%, var(--sup)); }
+.c3 { background: color-mix(in srgb, var(--acento) 52%, var(--sup)); }
+.c4 { background: color-mix(in srgb, var(--acento) 74%, var(--sup)); }
+.c5 { background: var(--acento); }
+.c4 b, .c5 b, .c4 small, .c5 small, .celda.c4, .celda.c5 { color: var(--acento-texto); }
+.leyenda-calor { display: flex; align-items: center; gap: 4px; justify-content: flex-end; font-size: 11px; color: var(--texto-3); margin-top: 10px; }
+.leyenda-calor i { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
+.mapa-franjas { display: grid; grid-template-columns: 34px repeat(5, 1fr); gap: 4px; }
+.mapa-franjas .cab { font-size: 10px; color: var(--texto-3); text-align: center; font-weight: 600; align-self: end; }
+.mapa-franjas .cab.izq { text-align: left; align-self: center; font-size: 12px; }
+.mapa-franjas .celda { height: 30px; border-radius: 7px; font-size: 10px; font-weight: 650; display: grid; place-items: center; color: var(--texto); font-variant-numeric: tabular-nums; }
+.grafica .linea { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.grafica .l-act { stroke: var(--acento); fill: var(--acento); }
+.grafica polyline.l-act { fill: none; }
+.grafica .l-prev { stroke: var(--texto-3); }
+.grafica .l-pres { stroke: var(--aviso); stroke-width: 1.5; }
+.grafica .punto { stroke: var(--sup); stroke-width: 2; }
+.leyenda i.linea { width: 14px; height: 2px; border-radius: 1px; }
+.leyenda i.l-act { background: var(--acento); }
+.leyenda i.l-prev { background: var(--texto-3); }
+.leyenda i.l-pres { background: var(--aviso); }
+.partes { display: flex; gap: 2px; height: 12px; border-radius: 99px; overflow: hidden; margin-top: 16px; }
+.partes i, .leyenda i.p-nec, .leyenda i.p-gus, .leyenda i.p-otr { display: block; }
+.p-nec { background: #2a78d6; }
+.p-gus { background: #eb6834; }
+.p-otr { background: var(--sup-3); }
+.leyenda i.p-nec, .leyenda i.p-gus, .leyenda i.p-otr { width: 10px; height: 10px; border-radius: 3px; }
+.tarjeta.accion, .tarjeta.dato { display: flex; gap: 12px; align-items: flex-start; }
+.tarjeta.dato { margin-top: 12px; }
+.tarjeta.accion + .tarjeta.accion { margin-top: 10px; }
+.tarjeta.accion > div, .tarjeta.dato > div { flex: 1; min-width: 0; }
+.tarjeta.accion .arriba { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.tarjeta.accion .monto { white-space: nowrap; font-weight: 700; }
+.tarjeta.accion .monto small { font-size: 12px; font-weight: 500; }
+.barras-signo { margin-top: 10px; display: grid; gap: 8px; }
+.fila-signo { display: grid; grid-template-columns: 40px 1fr 86px; align-items: center; gap: 8px; font-size: 13px; color: var(--texto-2); }
+.fila-signo b { text-align: right; font-weight: 650; }
+.pista-signo { position: relative; height: 10px; background: var(--pista); border-radius: 99px; }
+.pista-signo::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--texto-3); }
+.pista-signo i { position: absolute; top: 0; bottom: 0; border-radius: 99px; }
+.pista-signo i.pos { left: 50%; background: var(--bien); }
+.pista-signo i.neg { right: 50%; background: var(--critico); }
+.origen { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--texto-2); background: var(--sup-2); border-radius: 99px; padding: 5px 10px; margin-top: 10px; }
+.origen svg { width: 14px; height: 14px; }

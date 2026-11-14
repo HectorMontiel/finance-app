@@ -175,13 +175,14 @@ async function cargarTodo() {
   const [perf, movs, dicc] = await Promise.all([
     sb.from('perfiles').select('*').eq('user_id', E.usuario.id).maybeSingle(),
     todas('movimientos', 'id,f,h,m,tipo,c,tj,clave,cat_auto,extra'),
-    todas('diccionario', 'clave,cat'),
+    todas('diccionario', 'clave,cat,sub,esencial,nombre,confianza,ia,creado'),
   ]);
   if (perf.error) throw new Error(perf.error.message);
   E.perfil = perf.data || { gmail_conectado: false, ajustes: {} };
-  E.dicc = Object.fromEntries(dicc.map((d) => [d.clave, d.cat]));
+  E.dicc = Object.fromEntries(dicc.map((d) => [d.clave, d]));
   E.datos = { movs: movs.map((r) => ({ ...r, m: Number(r.m) })), generado: E.perfil.ultima_sync };
   cargarAjustes(E.perfil.ajustes || {});
+  if (!E.aj.revisado_en && E.datos.movs.length) { E.aj.revisado_en = Date.now(); guardarAjustes(); }
   preparar();
   E.ultimaCarga = Date.now();
 }
@@ -214,6 +215,7 @@ function nombreDe(m, k) {
   if (m.tipo === 'deposito') return bonito(m.c);
   return bonito(normComercio(m.c));
 }
+const ESENCIAL = { super: true, transporte: true, salud: true, servicios: true, comida: false, suscripciones: false, entretenimiento: false, apuestas: false, compras: false, viajes: false, otros: null, transferencias: null, efectivo: null };
 const terminacion = (c) => (String(c).split('·')[1] || '').trim();
 function preparar() {
   const aj = E.aj;
@@ -226,10 +228,17 @@ function preparar() {
     const cambio = aj.cambios[m.id] || {};
     const t = terminacion(m.c);
     const propia = (m.tipo === 'transferencia' && recibes.has(t)) || (m.tipo === 'deposito' && mandas.has(t)) ? 'propias' : null;
-    let cat = cambio.cat || aj.reglas[k] || propia || E.dicc[k] || m.cat_auto || m.cat || 'otros';
+    const d = E.dicc[k];
+    let cat = cambio.cat || aj.reglas[k] || propia || (d && d.cat) || m.cat_auto || m.cat || 'otros';
+    const origen = cambio.cat || aj.reglas[k] ? 'tu' : propia ? 'auto' : d ? (d.ia ? 'ia' : 'regla') : 'regla';
     if (m.tipo === 'deposito' && !CATS_INGRESO.includes(cat)) cat = 'ingreso';
     if (m.tipo !== 'deposito' && cat === 'ingreso') cat = 'otros';
-    return { ...m, k, cat, nota: cambio.nota || '', nombre: nombreDe(m, k) };
+    const usaDicc = origen === 'ia' || origen === 'regla';
+    const sub = usaDicc && d ? d.sub || '' : '';
+    const esencial = cat === 'propias' || cat === 'otros' || m.tipo === 'deposito' ? null
+      : usaDicc && d && d.esencial != null ? d.esencial : ESENCIAL[cat] ?? null;
+    const nombre = aj.nombres[k] || (d && d.nombre) || nombreDe(m, k);
+    return { ...m, k, cat, sub, esencial, origen, conf: d ? d.confianza : null, nota: cambio.nota || '', nombre, g: nombre.toLowerCase() };
   }).sort((a, b) => (b.f + (b.h || '')).localeCompare(a.f + (a.h || '')));
   E.tarjetasVistas = [...new Set(E.movs.map((m) => m.tj).filter(Boolean))];
 }
@@ -324,6 +333,9 @@ function vistaInicio() {
   const rango = usarMes ? [mesK + '-01', mesMas(mesK, 1) + '-01'] : [p.inicio, p.fin];
   const porCat = agrupar(gastos(...rango), 'cat');
   const ultimos = E.movs.slice(0, 6);
+  const porRevisar = gruposPorRevisar();
+  const revisarN = porRevisar.length;
+  const nuevosN = porRevisar.filter((x) => x.nuevo).length;
   const finTxt = fDia(p.fin);
 
   const avisoIOS = esIOS() && !esApp() && leer('mf_no_instalar') !== '1'
@@ -346,6 +358,9 @@ function vistaInicio() {
   ${!(+E.aj.pago_monto) ? `<button class="llamado" data-acc="editarPago" style="margin:0 0 12px">
       <span class="ic">${ic('i-cartera')}</span>
       <span><b>¿Cuánto te pagan y cada cuándo?</b><span>Con eso te digo cuánto puedes gastar al día</span></span>${ic('i-der')}</button>` : ''}
+  ${!E.sincronizando && revisarN ? `<button class="llamado" data-acc="revisar" style="margin:0 0 12px">
+      <span class="ic">${ic('i-chispa')}</span>
+      <span><b>${nuevosN ? `La IA clasificó ${nuevosN} ${nuevosN === 1 ? 'comercio nuevo' : 'comercios nuevos'}` : `La IA tiene duda en ${revisarN} ${revisarN === 1 ? 'comercio' : 'comercios'}`}</b><span>Ya están en su categoría. Revísalos si quieres (es opcional)</span></span>${ic('i-der')}</button>` : ''}
   <section class="tarjeta heroe" ${!(+E.aj.pago_monto) ? 'hidden' : ''}>
     <div class="etiqueta">${queda >= 0 ? `Disponible hasta tu pago del ${esc(finTxt)}` : 'Te pasaste de tu presupuesto'}</div>
     <div class="cifra num ${queda < 0 ? 'neg' : ''}">${queda < 0 ? '−' : ''}${fmt(Math.abs(queda))}</div>
@@ -442,6 +457,7 @@ function filtrarMovs() {
     if (f.cat && m.cat !== f.cat) return false;
     if (f.tj && m.tj !== f.tj) return false;
     if (f.k && m.k !== f.k) return false;
+    if (f.g && m.g !== f.g) return false;
     if (f.desde && m.f < f.desde) return false;
     if (f.hasta && m.f >= f.hasta) return false;
     if (!q && !f.todo && !f.desde && f.mes && mesDe(m.f) !== f.mes) return false;
@@ -458,8 +474,8 @@ function vistaMovimientos() {
   const catsPresentes = [...new Set(E.movs.filter((m) => (f.tipo === 'ingresos' ? m.tipo === 'deposito' : f.tipo === 'gastos' ? esGasto(m) : true)).map((m) => m.cat))]
     .sort((a, b) => Object.keys(CATS).indexOf(a) - Object.keys(CATS).indexOf(b));
   const tarjetas = E.tarjetasVistas;
-  const filtroExtra = f.k || f.desde
-    ? `<div style="margin-top:12px"><button class="chip on" data-acc="quitarFiltroExtra">${esc(f.k ? (E.movs.find((m) => m.k === f.k)?.nombre || 'Comercio') : `${fDia(f.desde)} – ${fDia(iso(sumaDias(fecha(f.hasta), -1)))}`)} ${ic('i-x')}</button></div>`
+  const filtroExtra = f.k || f.g || f.desde
+    ? `<div style="margin-top:12px"><button class="chip on" data-acc="quitarFiltroExtra">${esc(f.g ? (E.movs.find((m) => m.g === f.g)?.nombre || 'Comercio') : f.k ? (E.movs.find((m) => m.k === f.k)?.nombre || 'Comercio') : `${fDia(f.desde)} – ${fDia(iso(sumaDias(fecha(f.hasta), -1)))}`)} ${ic('i-x')}</button></div>`
     : '';
   const porMes = !f.q.trim() && !f.todo && !f.desde;
 
@@ -524,15 +540,14 @@ function rangoAnalisis() {
   return { desde: primero, hasta: mesMas(mesK, 1) + '-01', meses, etiqueta: `Desde ${fMes(mesDe(primero))}`, prevDesde: null };
 }
 
-function vistaAnalisis() {
-  const R = rangoAnalisis();
+function analisisResumen(R) {
   const g = gastos(R.desde, R.hasta);
   const total = suma(g);
   const prev = R.prevDesde ? suma(gastos(R.prevDesde, R.desde)) : 0;
   const ing = suma(E.movs.filter((m) => esIngreso(m) && m.f >= R.desde && m.f < R.hasta));
   const porCat = agrupar(g, 'cat');
   const prevCat = R.prevDesde ? Object.fromEntries(agrupar(gastos(R.prevDesde, R.desde), 'cat').map((x) => [x.k, x.total])) : {};
-  const porComercio = agrupar(g, 'k').slice(0, 10);
+  const porComercio = agrupar(g, 'g').slice(0, 10);
   const porTj = agrupar(g.filter((m) => m.tj), 'tj');
 
   // 12 meses en columnas
@@ -553,15 +568,9 @@ function vistaAnalisis() {
   const dow = [1, 2, 3, 4, 5, 6, 0].map((d) => ({ et: DIAS[d], v: porDow[d] / Math.max(1, semanas), actual: true }));
 
   const delta = prev ? (total - prev) / prev : null;
-  const rangos = [['mes', 'Mes'], ['3m', '3 m'], ['6m', '6 m'], ['12m', '1 año'], ['todo', 'Todo']];
   const recurrentes = pagosRecurrentes();
 
   return `
-  <header class="encabezado"><div><h1>Análisis</h1><div class="sub">${esc(R.etiqueta)}</div></div></header>
-  <div class="seg">${rangos.map(([v, n]) => `<button class="${E.an.rango === v ? 'on' : ''}" data-acc="rango" data-v="${v}">${n}</button>`).join('')}</div>
-  ${E.an.rango === 'mes' ? `<div class="navmes">
-    <button class="icono-btn" data-acc="mesAn" data-d="-1" aria-label="Mes anterior">${ic('i-izq')}</button><b>${esc(R.etiqueta)}</b>
-    <button class="icono-btn" data-acc="mesAn" data-d="1" aria-label="Mes siguiente" ${(E.an.mes || mesK) >= mesK ? 'disabled style="opacity:.35"' : ''}>${ic('i-der')}</button></div>` : ''}
 
   <div class="mosaicos cuatro">
     <div class="mosaico"><div class="et">Gastaste</div><div class="va num">${fmt(total)}</div>
@@ -587,7 +596,7 @@ function vistaAnalisis() {
       <div class="seccion"><h2>Dónde más gastas</h2></div>
       <div class="tarjeta plana">${porComercio.map((x) => {
         const m0 = x.movs[0]; const cat = CATS[m0.cat] || CATS.otros;
-        return `<button class="fila" data-acc="verComercio" data-k="${esc(x.k)}">
+        return `<button class="fila" data-acc="verComercio" data-g="${esc(x.k)}">
           <span class="cat-ic" style="--c:${cat.c}">${ic('c-' + m0.cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(m0.nombre)}</span><span class="t2">${x.n} ${x.n === 1 ? 'vez' : 'veces'} · ${esc(cat.n)}</span></span>
           <span class="monto num">${fmt(x.total)}</span></button>`;
@@ -599,7 +608,7 @@ function vistaAnalisis() {
         ${tablaDatos(dow.map((x) => [x.et, fmt(x.v)]), ['Día', 'Promedio'])}</div>
 
       ${recurrentes.length ? `<div class="seccion"><h2>Pagos que se repiten</h2><span class="texto-3 peq">${fmt(recurrentes.reduce((a, r) => a + r.prom, 0))}/mes</span></div>
-      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="verComercio" data-k="${esc(r.k)}">
+      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="verComercio" data-g="${esc(r.g)}">
           <span class="cat-ic" style="--c:${(CATS[r.cat] || CATS.otros).c}">${ic('c-' + r.cat)}</span>
           <span class="cuerpo"><span class="t1">${esc(r.nombre)}</span><span class="t2">${r.meses} de los últimos 4 meses</span></span>
           <span class="monto num">${fmt(r.prom)}<small>al mes</small></span></button>`).join('')}</div>` : ''}
@@ -641,7 +650,7 @@ function pagosRecurrentes() {
   const desde = ventana[3] + '-01';
   const hasta = mesK + '-01';
   const out = [];
-  for (const x of agrupar(gastos(desde, hasta).filter((m) => m.tipo === 'compra'), 'k')) {
+  for (const x of agrupar(gastos(desde, hasta).filter((m) => m.tipo === 'compra'), 'g')) {
     const porMes = {};
     for (const m of x.movs) porMes[mesDe(m.f)] = (porMes[mesDe(m.f)] || 0) + m.m;
     const vals = Object.values(porMes);
@@ -649,13 +658,397 @@ function pagosRecurrentes() {
     const prom = vals.reduce((a, v) => a + v, 0) / vals.length;
     const sd = Math.sqrt(vals.reduce((a, v) => a + (v - prom) ** 2, 0) / vals.length);
     const veces = x.n / vals.length;
-    if (sd / prom < 0.25 && veces <= 2) out.push({ k: x.k, nombre: x.movs[0].nombre, cat: x.movs[0].cat, prom, meses: vals.length });
+    if (sd / prom < 0.25 && veces <= 2) out.push({ g: x.k, nombre: x.movs[0].nombre, cat: x.movs[0].cat, prom, meses: vals.length });
   }
   return out.sort((a, b) => b.prom - a.prom).slice(0, 8);
 }
 
+const vecesTxt = (v) => { const r = v >= 3 ? Math.round(v) : Math.round(v * 10) / 10; return `${String(r).replace('.', ',')} ${r === 1 ? 'vez' : 'veces'}`; };
+/* ── Análisis a fondo: pestañas ─────────────────────────────────────────── */
+const FRANJAS = [['Madrugada', 0, 6], ['Mañana', 6, 12], ['Mediodía', 12, 16], ['Tarde', 16, 20], ['Noche', 20, 24]];
+const horaDe = (m) => (m.h ? +m.h.slice(0, 2) : null);
+const DIAS_LMD = [1, 2, 3, 4, 5, 6, 0];
+
+function vistaAnalisis() {
+  const v = E.an.vista || 'resumen';
+  const R = rangoAnalisis();
+  const pestanas = [['resumen', 'General'], ['dia', 'Día a día'], ['habitos', 'Hábitos'], ['ahorro', 'Ahorrar']];
+  const mesK = mesDe(iso(hoy()));
+  const rangos = [['mes', 'Mes'], ['3m', '3 m'], ['6m', '6 m'], ['12m', '1 año'], ['todo', 'Todo']];
+  let selector = '';
+  if (v === 'dia') {
+    const k = E.an.mesDia || mesK;
+    selector = `<div class="navmes"><button class="icono-btn" data-acc="mesDia" data-d="-1" aria-label="Mes anterior">${ic('i-izq')}</button><b>${esc(cap(fMes(k)))}</b>
+      <button class="icono-btn" data-acc="mesDia" data-d="1" aria-label="Mes siguiente" ${k >= mesK ? 'disabled style="opacity:.35"' : ''}>${ic('i-der')}</button></div>`;
+  } else {
+    selector = `<div class="seg" style="margin-top:10px">${rangos.map(([r, n]) => `<button class="${E.an.rango === r ? 'on' : ''}" data-acc="rango" data-v="${r}">${n}</button>`).join('')}</div>
+      ${E.an.rango === 'mes' ? `<div class="navmes"><button class="icono-btn" data-acc="mesAn" data-d="-1" aria-label="Mes anterior">${ic('i-izq')}</button><b>${esc(R.etiqueta)}</b>
+      <button class="icono-btn" data-acc="mesAn" data-d="1" aria-label="Mes siguiente" ${(E.an.mes || mesK) >= mesK ? 'disabled style="opacity:.35"' : ''}>${ic('i-der')}</button></div>` : ''}`;
+  }
+  const cuerpo = v === 'dia' ? analisisDia() : v === 'habitos' ? analisisHabitos(R) : v === 'ahorro' ? analisisAhorro(R) : analisisResumen(R);
+  return `<header class="encabezado"><div><h1>Análisis</h1><div class="sub">${v === 'dia' ? 'Cada día, a detalle' : esc(R.etiqueta)}</div></div></header>
+    <div class="seg pestanas">${pestanas.map(([p, n]) => `<button class="${v === p ? 'on' : ''}" data-acc="pestanaAn" data-v="${p}">${n}</button>`).join('')}</div>
+    ${selector}${cuerpo}`;
+}
+
+/* Escala secuencial (un solo tono, de claro a oscuro) para los mapas de calor */
+function nivelesCalor(valores) {
+  const v = valores.filter((x) => x > 0).sort((a, b) => a - b);
+  if (!v.length) return () => 0;
+  const q = (p) => v[Math.min(v.length - 1, Math.floor(p * v.length))];
+  const cortes = [q(0.2), q(0.45), q(0.7), q(0.9)];
+  return (x) => (x <= 0 ? 0 : 1 + cortes.filter((c) => x > c).length);
+}
+const leyendaCalor = () => `<div class="leyenda-calor"><span>Menos</span>${[0, 1, 2, 3, 4, 5].map((n) => `<i class="c${n}"></i>`).join('')}<span>Más</span></div>`;
+
+/* ── Día a día ──────────────────────────────────────────────────────────── */
+function analisisDia() {
+  const mesK = mesDe(iso(hoy()));
+  const k = E.an.mesDia || mesK;
+  const [y, mo] = k.split('-').map(Number);
+  const diasMes = new Date(y, mo, 0).getDate();
+  const actual = k === mesK;
+  const pasados = actual ? hoy().getDate() : diasMes;
+  const g = gastos(k + '-01', mesMas(k, 1) + '-01');
+  const porDia = {}; const nDia = {};
+  for (const m of g) { porDia[m.f] = (porDia[m.f] || 0) + m.m; nDia[m.f] = (nDia[m.f] || 0) + 1; }
+  const total = suma(g);
+  const promDia = total / pasados;
+  const proy = actual ? promDia * diasMes : total;
+  const diaS = (d) => `${k}-${pad(d)}`;
+  let sinGasto = 0; let racha = 0; let rachaMax = 0;
+  for (let d = 1; d <= pasados; d++) { if (!porDia[diaS(d)]) { sinGasto++; racha++; rachaMax = Math.max(rachaMax, racha); } else racha = 0; }
+  const presMes = +E.aj.pago_monto ? ingresoMensual() * (1 - (+E.aj.meta_ahorro || 0) / 100) : 0;
+
+  // Calendario de calor
+  const nivel = nivelesCalor(Object.values(porDia));
+  const offset = (new Date(y, mo - 1, 1).getDay() + 6) % 7;
+  let cal = `<div class="calendario">${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((d) => `<span class="cab">${d}</span>`).join('')}`;
+  for (let i = 0; i < offset; i++) cal += '<span></span>';
+  for (let d = 1; d <= diasMes; d++) {
+    const f = diaS(d); const v = porDia[f] || 0; const futuro = actual && d > pasados;
+    cal += `<button class="dia-cal c${futuro ? 'f' : nivel(v)} ${actual && d === pasados ? 'hoy' : ''}" ${futuro ? 'disabled' : `data-acc="verDia" data-f="${f}"`} data-tip="${esc(`<b>${cap(fDia(f))}</b> · ${v ? fmt(v) : 'sin gastos'}`)}">
+      <b>${d}</b><small>${v ? fmtK(v) : ''}</small></button>`;
+  }
+  cal += '</div>';
+
+  // Acumulado del mes contra el mes pasado y contra tu presupuesto
+  const prevK = mesMas(k, -1);
+  const [py, pm] = prevK.split('-').map(Number);
+  const diasPrev = new Date(py, pm, 0).getDate();
+  const prevPorDia = {};
+  for (const m of gastos(prevK + '-01', k + '-01')) prevPorDia[+m.f.slice(8)] = (prevPorDia[+m.f.slice(8)] || 0) + m.m;
+  const acum = []; let s = 0;
+  for (let d = 1; d <= pasados; d++) { s += porDia[diaS(d)] || 0; acum.push([d, s]); }
+  const acumPrev = []; s = 0;
+  for (let d = 1; d <= diasPrev; d++) { s += prevPorDia[d] || 0; acumPrev.push([d, s]); }
+  const series = [
+    { nombre: cap(MESES_L[pm - 1]), clase: 'l-prev', pts: acumPrev },
+    { nombre: cap(MESES_L[mo - 1]), clase: 'l-act', pts: acum, etiquetaFinal: true },
+  ];
+  if (presMes) series.unshift({ nombre: 'Tu presupuesto', clase: 'l-pres', pts: [[1, presMes / diasMes], [diasMes, presMes]] });
+
+  const caros = Object.entries(porDia).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const dowHoy = hoy().getDay();
+  const mismosDias = [];
+  for (let i = 1; i <= 8; i++) { const f = iso(sumaDias(hoy(), -7 * i)); mismosDias.push(suma(gastos(f, iso(sumaDias(fecha(f), 1))))); }
+  const promMismoDia = mismosDias.reduce((a, b) => a + b, 0) / mismosDias.length;
+  const gHoy = suma(gastos(iso(hoy()), iso(sumaDias(hoy(), 1))));
+
+  return `
+  <div class="mosaicos cuatro">
+    <div class="mosaico"><div class="et">${actual ? 'Llevas este mes' : 'Gastaste'}</div><div class="va num">${fmt(total)}</div><div class="de">${g.length} movimientos</div></div>
+    <div class="mosaico"><div class="et">Promedio por día</div><div class="va num">${fmt(promDia)}</div><div class="de">mediana ${fmt(mediana(Object.values(porDia)))} los días que gastas</div></div>
+    <div class="mosaico"><div class="et">${actual ? 'Así cerrarías el mes' : 'Días sin gastar'}</div><div class="va num">${actual ? fmt(proy) : sinGasto}</div>
+      <div class="de ${actual && presMes ? (proy > presMes ? 'sube' : 'baja') : ''}">${actual ? (presMes ? `${proy > presMes ? 'arriba' : 'abajo'} de tu presupuesto por ${fmt(Math.abs(proy - presMes))}` : 'al ritmo de hoy') : `racha más larga: ${rachaMax}`}</div></div>
+    <div class="mosaico"><div class="et">${actual ? 'Días sin gastar' : 'Día más caro'}</div><div class="va num">${actual ? `${sinGasto} de ${pasados}` : caros[0] ? fmt(caros[0][1]) : '—'}</div>
+      <div class="de">${actual ? `racha más larga: ${rachaMax} día${rachaMax === 1 ? '' : 's'}` : caros[0] ? esc(fDia(caros[0][0])) : ''}</div></div>
+  </div>
+  ${actual ? `<div class="tarjeta" style="margin-top:12px;display:flex;gap:12px;align-items:center">
+    <span class="cat-ic" style="--c:var(--acento)">${ic('i-calendario')}</span>
+    <span class="peq texto-2" style="flex:1">Hoy llevas <b style="color:var(--texto)">${fmt(gHoy)}</b>. Un ${DIAS_L[dowHoy]} normal gastas <b style="color:var(--texto)">${fmt(promMismoDia)}</b> (promedio de los últimos 8).</span></div>` : ''}
+  <div class="rejilla">
+    <div>
+      <div class="seccion"><h2>Calendario</h2><span class="texto-3 peq">toca un día</span></div>
+      <div class="tarjeta">${cal}${leyendaCalor()}</div>
+    </div>
+    <div>
+      <div class="seccion"><h2>Cómo se acumula</h2></div>
+      <div class="tarjeta"><div class="texto-2 peq">Gasto acumulado por día del mes</div>
+        ${graficaLinea(series, { maxX: Math.max(diasMes, diasPrev), alto: 220 })}
+        <div class="leyenda">${series.map((x) => `<span><i class="linea ${x.clase}"></i>${esc(x.nombre)}</span>`).join('')}</div>
+        ${tablaDatos(acum.map(([d, v]) => [`${d} de ${MESES[mo - 1]}`, fmt(v)]), ['Día', 'Acumulado'])}</div>
+      <div class="seccion"><h2>Días más caros</h2></div>
+      <div class="tarjeta plana">${caros.map(([f, v]) => {
+        const top = agrupar(gastos(f, iso(sumaDias(fecha(f), 1))), 'g')[0];
+        return `<button class="fila" data-acc="verDia" data-f="${f}"><span class="cat-ic" style="--c:var(--acento)">${ic('i-calendario')}</span>
+          <span class="cuerpo"><span class="t1">${esc(cap(fDiaLargo(f)))}</span><span class="t2">${nDia[f]} movimientos · sobre todo ${esc(top ? top.movs[0].nombre : '')}</span></span>
+          <span class="monto num">${fmt(v)}</span></button>`;
+      }).join('') || vacio('i-calendario', 'Sin gastos', 'en este mes')}</div>
+    </div>
+  </div>`;
+}
+
+function hojaDia(f) {
+  const lista = E.movs.filter((m) => m.f === f).sort((a, b) => (a.h || '').localeCompare(b.h || ''));
+  const g = lista.filter(esGasto);
+  const porCat = agrupar(g, 'cat');
+  abrirHoja(`${cabHoja(cap(fDiaLargo(f)))}
+    <div class="grande" style="padding-bottom:8px"><div class="m num">${fmt(suma(g))}</div><div class="d">${g.length} gasto${g.length === 1 ? '' : 's'}${lista.length > g.length ? ` · ${lista.length - g.length} otros movimientos` : ''}</div></div>
+    ${porCat.length ? `<div class="chips" style="margin:0 -18px 6px;padding:0 18px">${porCat.map((c) => `<span class="chip" style="--c:${CATS[c.k].c}"><span class="pt"></span>${esc(CATS[c.k].n)} ${fmt(c.total)}</span>`).join('')}</div>` : ''}
+    <div class="tarjeta plana" style="box-shadow:none;background:var(--sup-2)">${lista.map(filaMov).join('') || vacio('i-calendario', 'Sin movimientos', '')}</div>`);
+}
+
+/* ── Hábitos ────────────────────────────────────────────────────────────── */
+function diasDelRango(R) {
+  const fin = new Date(Math.min(fecha(R.hasta), sumaDias(hoy(), 1)));
+  return Math.max(1, difDias(fecha(R.desde), fin));
+}
+function pagosEntre(desde, hasta) {
+  const out = []; const aj = E.aj; const a = fecha(desde); const b = fecha(hasta);
+  if (aj.frecuencia === 'catorcenal') {
+    let d = fecha(aj.pago_ref || desde);
+    while (d > a) d = sumaDias(d, -14);
+    for (; d < b; d = sumaDias(d, 14)) if (d >= a) out.push(iso(d));
+  } else {
+    for (let x = new Date(a.getFullYear(), a.getMonth(), 1); x < b; x = new Date(x.getFullYear(), x.getMonth() + 1, 1)) {
+      const dias = aj.frecuencia === 'quincenal' ? [15, new Date(x.getFullYear(), x.getMonth() + 1, 0).getDate()] : [Math.min(28, +aj.pago_dia || 1)];
+      for (const d of dias) { const f = new Date(x.getFullYear(), x.getMonth(), d); if (f >= a && f < b) out.push(iso(f)); }
+    }
+  }
+  return out;
+}
+
+function analisisHabitos(R) {
+  const g = gastos(R.desde, R.hasta);
+  if (!g.length) return `<div class="tarjeta" style="margin-top:14px">${vacio('i-grafica', 'Sin gastos', 'en este periodo')}</div>`;
+  const dias = diasDelRango(R);
+  const semanas = dias / 7;
+  const total = suma(g);
+
+  // Por hora (sólo compras: una transferencia a medianoche no es un hábito de consumo)
+  const compras = g.filter((m) => m.tipo === 'compra');
+  const totalCompras = suma(compras) || 1;
+  const porHora = Array(24).fill(0); const nHora = Array(24).fill(0);
+  for (const m of compras) { const h = horaDe(m); if (h != null) { porHora[h] += m.m; nHora[h]++; } }
+  const horas = porHora.map((v, h) => ({ et: h % 3 === 0 ? `${h}` : '', tip: `${h}:00 a ${h}:59 · ${nHora[h]} compras`, v: v / R.meses, actual: true }));
+  const madrugada = compras.filter((m) => { const h = horaDe(m); return h != null && h < 6; });
+  const noche = compras.filter((m) => { const h = horaDe(m); return h != null && h >= 20; });
+
+  // Día × franja (promedio por semana)
+  const mat = DIAS_LMD.map(() => FRANJAS.map(() => 0));
+  for (const m of compras) {
+    const h = horaDe(m); if (h == null) continue;
+    const fi = FRANJAS.findIndex(([, a, b]) => h >= a && h < b);
+    mat[DIAS_LMD.indexOf(fecha(m.f).getDay())][fi] += m.m / semanas;
+  }
+  const nivel = nivelesCalor(mat.flat());
+  const mapa = `<div class="mapa-franjas"><span></span>${FRANJAS.map(([n]) => `<span class="cab">${n}</span>`).join('')}
+    ${DIAS_LMD.map((d, i) => `<span class="cab izq">${DIAS[d]}</span>${FRANJAS.map((fr, j) => `<span class="celda c${nivel(mat[i][j])}" data-tip="${esc(`<b>${cap(DIAS_L[d])}, ${fr[0].toLowerCase()}</b> · ${fmt(mat[i][j])} por semana`)}">${mat[i][j] >= 50 ? fmtK(mat[i][j]) : ''}</span>`).join('')}`).join('')}</div>`;
+
+  // Fin de semana contra entre semana (por día de calendario)
+  let nFin = 0; let nSem = 0;
+  for (let x = fecha(R.desde); x < new Date(Math.min(fecha(R.hasta), sumaDias(hoy(), 1))); x = sumaDias(x, 1)) (x.getDay() % 6 === 0 ? nFin++ : nSem++);
+  const gFin = suma(g.filter((m) => fecha(m.f).getDay() % 6 === 0));
+  const diaFin = gFin / Math.max(1, nFin); const diaSem = (total - gFin) / Math.max(1, nSem);
+
+  // Gastos hormiga: compras chicas (< $150)
+  const hormiga = g.filter((m) => m.tipo === 'compra' && m.m < 150);
+  const hormigaTop = agrupar(hormiga, 'g').sort((a, b) => b.n - a.n).slice(0, 5);
+
+  // Frecuencia por comercio
+  const frecuentes = agrupar(g.filter((m) => m.tipo === 'compra'), 'g').sort((a, b) => b.n - a.n).slice(0, 8);
+
+  // Subcategorías
+  const subs = agrupar(g.map((m) => ({ ...m, sc: m.cat + '|' + (m.sub || '') })), 'sc').slice(0, 12);
+
+  // Efecto del día de pago: gasto por día en los 3 días después de cobrar contra el resto
+  let efecto = '';
+  if (+E.aj.pago_monto) {
+    const pagos = pagosEntre(iso(sumaDias(fecha(R.desde), -31)), R.hasta).map(fecha);
+    let gCerca = 0; let dCerca = 0; let gLejos = 0; let dLejos = 0;
+    const porDia = {}; for (const m of g) porDia[m.f] = (porDia[m.f] || 0) + m.m;
+    for (let x = fecha(R.desde); x < new Date(Math.min(fecha(R.hasta), hoy())); x = sumaDias(x, 1)) {
+      const ult = pagos.filter((p) => p <= x).pop();
+      if (!ult) continue;
+      const cerca = difDias(ult, x) < 3;
+      const v = porDia[iso(x)] || 0;
+      if (cerca) { gCerca += v; dCerca++; } else { gLejos += v; dLejos++; }
+    }
+    if (dCerca && dLejos) {
+      const a = gCerca / dCerca; const b = gLejos / dLejos;
+      efecto = `<div class="tarjeta dato"><span class="cat-ic" style="--c:var(--acento)">${ic('i-cartera')}</span><div>
+        <b>Los 3 días después de cobrar gastas ${fmt(a)} al día</b><div class="texto-2 peq">El resto de los días, ${fmt(b)}. ${a > b * 1.3 ? `Es ${(a / b).toFixed(1)} veces más: el dinero recién cobrado se va rápido.` : 'Tu gasto es parejo durante el periodo.'}</div></div></div>`;
+    }
+  }
+
+  return `
+  <div class="mosaicos cuatro">
+    <div class="mosaico"><div class="et">Compras al día</div><div class="va num">${(g.filter((m) => m.tipo === 'compra').length / dias).toFixed(1)}</div><div class="de">ticket típico ${fmt(mediana(g.filter((m) => m.tipo === 'compra').map((m) => m.m)))}</div></div>
+    <div class="mosaico"><div class="et">Fin de semana</div><div class="va num">${fmt(diaFin)}</div><div class="de ${diaFin > diaSem ? 'sube' : 'baja'}">al día · entre semana ${fmt(diaSem)}</div></div>
+    <div class="mosaico"><div class="et">Gastos hormiga</div><div class="va num">${fmt(suma(hormiga) / R.meses)}</div><div class="de">al mes · ${Math.round(hormiga.length / R.meses)} compras chicas</div></div>
+    <div class="mosaico"><div class="et">De noche y madrugada</div><div class="va num">${fmt((suma(noche) + suma(madrugada)) / R.meses)}</div><div class="de">al mes · ${Math.round(((suma(noche) + suma(madrugada)) / totalCompras) * 100)} % de tus compras</div></div>
+  </div>
+  ${efecto}
+  <div class="rejilla">
+    <div>
+      <div class="seccion"><h2>A qué hora gastas</h2></div>
+      <div class="tarjeta"><div class="texto-2 peq">Compras: promedio al mes por hora del día</div>
+        ${graficaColumnas(horas, { alto: 170, sinValores: true })}
+        ${madrugada.length ? `<p class="peq texto-2" style="margin:10px 0 0">Entre 12 y 6 de la mañana: <b style="color:var(--texto)">${fmt(suma(madrugada) / R.meses)} al mes</b> en ${madrugada.length} compras, sobre todo en ${esc(agrupar(madrugada, 'g').slice(0, 2).map((x) => x.movs[0].nombre).join(' y '))}.</p>` : ''}
+        ${tablaDatos(porHora.map((v, h) => [`${h}:00`, fmt(v / R.meses)]), ['Hora', 'Al mes'])}</div>
+      <div class="seccion"><h2>Día y momento</h2><span class="texto-3 peq">compras por semana</span></div>
+      <div class="tarjeta">${mapa}${leyendaCalor()}</div>
+      <div class="seccion"><h2>En qué exactamente</h2><span class="texto-3 peq">subcategorías</span></div>
+      <div class="tarjeta plana">${subs.map((x) => {
+        const [cat, sub] = x.k.split('|'); const c = CATS[cat] || CATS.otros;
+        return `<button class="cat-fila" style="--c:${c.c}" data-acc="verCategoria" data-cat="${cat}" data-desde="${R.desde}" data-hasta="${R.hasta}">
+          <span class="cat-ic">${ic('c-' + cat)}</span>
+          <span class="cuerpo"><span class="arriba"><b>${esc(sub ? cap(sub) : c.n)}</b><span class="monto num">${fmt(x.total / R.meses)}<small class="texto-3"> /mes</small></span></span>
+          <span class="barrita"><i style="width:${((x.total / subs[0].total) * 100).toFixed(1)}%"></i></span>
+          <span class="abajo"><span>${esc(c.n)} · ${x.n} ${cat === 'transferencias' ? 'envíos' : 'compras'}</span><span>ticket ${fmt(x.total / x.n)}</span></span></span></button>`;
+      }).join('')}</div>
+    </div>
+    <div>
+      <div class="seccion"><h2>Gastos hormiga</h2><span class="texto-3 peq">compras de menos de $150</span></div>
+      <div class="tarjeta plana">${hormigaTop.map((x) => `<button class="fila" data-acc="verComercio" data-g="${esc(x.k)}">
+          <span class="cat-ic" style="--c:${CATS[x.movs[0].cat].c}">${ic('c-' + x.movs[0].cat)}</span>
+          <span class="cuerpo"><span class="t1">${esc(x.movs[0].nombre)}</span><span class="t2">${vecesTxt(x.n)} · ${vecesTxt(x.n / R.meses)} al mes · ticket ${fmt(x.total / x.n)}</span></span>
+          <span class="monto num">${fmt(x.total / R.meses)}<small>al mes</small></span></button>`).join('') || vacio('i-cartera', 'Sin gastos hormiga', '')}</div>
+      <div class="seccion"><h2>A dónde vas más seguido</h2></div>
+      <div class="tarjeta plana">${frecuentes.map((x) => `<button class="fila" data-acc="verComercio" data-g="${esc(x.k)}">
+          <span class="cat-ic" style="--c:${CATS[x.movs[0].cat].c}">${ic('c-' + x.movs[0].cat)}</span>
+          <span class="cuerpo"><span class="t1">${esc(x.movs[0].nombre)}</span><span class="t2">${vecesTxt(x.n / R.meses)} al mes · ticket ${fmt(x.total / x.n)}</span></span>
+          <span class="monto num">${fmt(x.total / R.meses)}<small>al mes</small></span></button>`).join('')}</div>
+    </div>
+  </div>`;
+}
+
+/* ── Ahorrar ────────────────────────────────────────────────────────────── */
+function analisisAhorro(R) {
+  const g = gastos(R.desde, R.hasta);
+  if (!g.length) return `<div class="tarjeta" style="margin-top:14px">${vacio('i-cartera', 'Sin gastos', 'en este periodo')}</div>`;
+  const meses = R.meses;
+  const nec = suma(g.filter((m) => m.esencial === true));
+  const gus = suma(g.filter((m) => m.esencial === false));
+  const otros = suma(g) - nec - gus;
+
+  // Cada gasto evitable cae en UN solo grupo (para no contar doble el ahorro)
+  const grupos = { apuestas: [], madrugada: [], hormiga: [], gustos: {} };
+  for (const m of g) {
+    if (m.cat === 'apuestas') { grupos.apuestas.push(m); continue; }
+    if (m.esencial !== false) continue;
+    const h = horaDe(m);
+    if (h != null && h < 6) grupos.madrugada.push(m);
+    else if (m.tipo === 'compra' && m.m < 150) grupos.hormiga.push(m);
+    else { const k = m.cat + '|' + (m.sub || ''); (grupos.gustos[k] = grupos.gustos[k] || []).push(m); }
+  }
+  const acciones = [];
+  if (grupos.apuestas.length) {
+    const t = suma(grupos.apuestas) / meses;
+    acciones.push({ icono: 'c-apuestas', c: CATS.apuestas.c, titulo: 'Deja las apuestas', ahorro: t,
+      texto: `Apostaste ${fmt(t)} al mes en ${Math.round(grupos.apuestas.length / meses)} jugadas. Es dinero que casi siempre se pierde: poner un tope semanal o dejarlo es el ahorro más directo.` });
+  }
+  if (grupos.madrugada.length) {
+    const t = suma(grupos.madrugada) / meses;
+    acciones.push({ icono: 'i-alerta', c: '#6250d6', titulo: 'Cuida lo de la madrugada', ahorro: t * 0.5,
+      texto: `Entre 12 y 6 a. m. se van ${fmt(t)} al mes (${esc(agrupar(grupos.madrugada, 'g').slice(0, 2).map((x) => x.movs[0].nombre).join(', '))}). Salir con un monto fijo en efectivo y dejar las tarjetas en casa suele cortarlo a la mitad.` });
+  }
+  if (grupos.hormiga.length) {
+    const t = suma(grupos.hormiga) / meses;
+    const top = agrupar(grupos.hormiga, 'g').sort((a, b) => b.n - a.n)[0];
+    acciones.push({ icono: 'c-super', c: CATS.super.c, titulo: 'Junta los gastos hormiga', ahorro: t * 0.4,
+      texto: `${Math.round(grupos.hormiga.length / meses)} compras chicas al mes suman ${fmt(t)}. La que más se repite: ${esc(top.movs[0].nombre)} (${vecesTxt(top.n / meses)} al mes). Comprar por paquete en el súper rinde más.` });
+  }
+  // Sólo hábitos: lo que se repite (3+ veces y al menos una vez al mes); un vuelo no es un hábito
+  const topGustos = Object.entries(grupos.gustos).map(([k, ms]) => ({ k, ms, t: suma(ms) / meses }))
+    .filter((x) => x.ms.length >= 3 && x.ms.length / meses >= 1).sort((a, b) => b.t - a.t).slice(0, 3);
+  for (const x of topGustos) {
+    const [cat, sub] = x.k.split('|');
+    const visitas = x.ms.length / meses;
+    acciones.push({ icono: 'c-' + cat, c: CATS[cat].c, titulo: `Baja una cuarta parte en ${sub || CATS[cat].n.toLowerCase()}`, ahorro: x.t * 0.25,
+      texto: `Gastas ${fmt(x.t)} al mes en ${vecesTxt(visitas)} (ticket de ${fmt(x.t / visitas)}). Si en lugar de ${vecesTxt(visitas)} fueran ${vecesTxt(visitas * 0.75)}, ahorras ${fmt(x.t * 0.25)}.` });
+  }
+  acciones.sort((a, b) => b.ahorro - a.ahorro);
+  const totalAhorro = acciones.reduce((a, x) => a + x.ahorro, 0);
+  const recurrentes = pagosRecurrentes();
+
+  // Ahorro real por mes (ingreso estimado − gasto)
+  let ahorroReal = '';
+  if (+E.aj.pago_monto) {
+    const mesK = mesDe(iso(hoy()));
+    const meta = ingresoMensual() * (+E.aj.meta_ahorro || 0) / 100;
+    const filas = [];
+    for (let i = 6; i >= 1; i--) { const k = mesMas(mesK, -i); filas.push({ k, v: ingresoMensual() - suma(gastos(k + '-01', mesMas(k, 1) + '-01')) }); }
+    const prom = filas.reduce((a, f) => a + f.v, 0) / filas.length;
+    ahorroReal = `<div class="seccion"><h2>Lo que de verdad ahorras</h2></div>
+      <div class="tarjeta"><div class="texto-2 peq">Lo que ganas al mes (${fmt(ingresoMensual())}) menos lo que gastas</div>
+      <div class="barras-signo">${filas.map((f) => {
+        const max = Math.max(...filas.map((x) => Math.abs(x.v)), 1);
+        return `<div class="fila-signo" data-tip="${esc(`<b>${cap(fMes(f.k))}</b> · ${f.v >= 0 ? 'ahorraste' : 'faltaron'} ${fmt(Math.abs(f.v))}`)}"><span>${esc(cap(MESES[fecha(f.k + '-01').getMonth()]))}</span>
+          <span class="pista-signo"><i class="${f.v >= 0 ? 'pos' : 'neg'}" style="width:${((Math.abs(f.v) / max) * 50).toFixed(1)}%"></i></span>
+          <b class="num ${f.v >= 0 ? 'baja' : 'sube'}">${f.v >= 0 ? '' : '−'}${fmt(Math.abs(f.v))}</b></div>`;
+      }).join('')}</div>
+      <p class="peq texto-2" style="margin:10px 0 0">${prom >= meta ? `En promedio ahorras ${fmt(prom)} al mes: cumples tu meta de ${fmt(meta)}.` : prom >= 0 ? `En promedio ahorras ${fmt(prom)} al mes; tu meta es ${fmt(meta)}. Te faltan ${fmt(meta - prom)}.` : `En promedio gastas ${fmt(-prom)} más de lo que ganas al mes. Revisa también tus transferencias: si alguna es entre tus cuentas, márcala.`}</p></div>`;
+  }
+
+  return `
+  <section class="tarjeta heroe" style="margin-top:14px">
+    <div class="etiqueta">${ic('i-chispa')}Podrías ahorrar</div>
+    <div class="cifra num">${fmt(totalAhorro)}<small> al mes</small></div>
+    <div class="detalle">${fmt(totalAhorro * 12)} al año con ${acciones.length} cambios, sin tocar lo necesario.</div>
+    <div class="partes" role="img" aria-label="Necesario ${fmt(nec / meses)}, gustos ${fmt(gus / meses)}, sin clasificar ${fmt(otros / meses)} al mes">
+      <i class="p-nec" style="flex:${nec}"></i><i class="p-gus" style="flex:${gus}"></i><i class="p-otr" style="flex:${otros}"></i></div>
+    <div class="leyenda" style="margin-top:8px"><span><i class="p-nec"></i>Necesario ${fmt(nec / meses)}/mes</span><span><i class="p-gus"></i>Gustos ${fmt(gus / meses)}/mes</span>${otros ? `<span><i class="p-otr"></i>Transferencias y otros ${fmt(otros / meses)}/mes</span>` : ''}</div>
+  </section>
+  <div class="rejilla">
+    <div>
+      <div class="seccion"><h2>Qué hacer</h2><span class="texto-3 peq">de mayor a menor ahorro</span></div>
+      ${acciones.map((a, i) => `<div class="tarjeta accion"><span class="cat-ic" style="--c:${a.c}">${ic(a.icono)}</span>
+        <div><div class="arriba"><b>${i + 1}. ${esc(a.titulo)}</b><span class="monto num baja">+${fmt(a.ahorro)}<small>/mes</small></span></div>
+        <div class="texto-2 peq">${a.texto}</div></div></div>`).join('') || `<div class="tarjeta">${vacio('i-check', '¡Vas muy bien!', 'No vemos gastos evitables grandes en este periodo.')}</div>`}
+    </div>
+    <div>
+      ${ahorroReal}
+      ${recurrentes.length ? `<div class="seccion"><h2>Revisa lo que pagas cada mes</h2><span class="texto-3 peq">${fmt(recurrentes.reduce((a, r) => a + r.prom, 0))}/mes</span></div>
+      <div class="tarjeta plana">${recurrentes.map((r) => `<button class="fila" data-acc="verComercio" data-g="${esc(r.g)}">
+          <span class="cat-ic" style="--c:${(CATS[r.cat] || CATS.otros).c}">${ic('c-' + r.cat)}</span>
+          <span class="cuerpo"><span class="t1">${esc(r.nombre)}</span><span class="t2">${r.meses} de los últimos 4 meses · ¿lo sigues usando?</span></span>
+          <span class="monto num">${fmt(r.prom)}<small>al mes</small></span></button>`).join('')}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+/* Línea acumulada (SVG). series: [{nombre, clase, pts:[[x,y]], etiquetaFinal}] */
+function graficaLinea(series, { maxX, alto = 200 } = {}) {
+  const W = 360; const H = Math.round(alto * 0.62); const top = 16; const bot = 20; const izq = 30; const der = 34;
+  const maxY = Math.max(1, ...series.flatMap((s) => s.pts.map((p) => p[1])));
+  const paso = niceStep(maxY); const tope = Math.ceil(maxY / paso) * paso;
+  const x = (d) => izq + ((W - izq - der) * (d - 1)) / Math.max(1, maxX - 1);
+  const y = (v) => top + (H - top - bot) * (1 - v / tope);
+  let s = `<svg class="lienzo" viewBox="0 0 ${W} ${H}" role="img" aria-label="Gasto acumulado por día">`;
+  for (let v = 0; v <= tope + 1e-6; v += paso) s += `<line class="rej" x1="${izq}" x2="${W - der}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="eje" x="0" y="${(y(v) + 4).toFixed(1)}">${fmtK(v)}</text>`;
+  for (const d of [1, 8, 15, 22, maxX]) s += `<text class="eje" x="${x(d).toFixed(1)}" y="${H - 6}" text-anchor="middle">${d}</text>`;
+  for (const se of series) {
+    if (!se.pts.length) continue;
+    s += `<polyline class="linea ${se.clase}" points="${se.pts.map(([d, v]) => `${x(d).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`;
+    if (se.etiquetaFinal) {
+      const [d, v] = se.pts[se.pts.length - 1];
+      s += `<circle class="punto ${se.clase}" cx="${x(d).toFixed(1)}" cy="${y(v).toFixed(1)}" r="4"/><text class="valor-col" x="${(x(d) + 6).toFixed(1)}" y="${(y(v) - 6).toFixed(1)}">${fmtK(v)}</text>`;
+    }
+  }
+  const act = series.find((z) => z.etiquetaFinal);
+  const prev = series.find((z) => z.clase === 'l-prev');
+  for (let d = 1; d <= maxX; d++) {
+    const a = act && act.pts[d - 1]; const p = prev && prev.pts[d - 1];
+    if (!a && !p) continue;
+    s += `<rect class="zona" x="${(x(d) - (W - izq - der) / maxX / 2).toFixed(1)}" y="0" width="${((W - izq - der) / maxX).toFixed(1)}" height="${H}" data-tip="${esc(`<b>Día ${d}</b>${a ? ` · llevas ${fmt(a[1])}` : ''}${p ? ` · el mes pasado ${fmt(p[1])}` : ''}`)}"/>`;
+  }
+  return `<div class="grafica">${s}</svg></div>`;
+}
+
 /* ── Gráfica de columnas (SVG) ──────────────────────────────────────────── */
-function graficaColumnas(datos, { prom = 0, alto = 180 } = {}) {
+function graficaColumnas(datos, { prom = 0, alto = 180, sinValores = false } = {}) {
   const W = 360; const H = Math.round(alto * 0.62); const top = 18; const bot = 20; const izq = 30;
   const max = Math.max(prom, ...datos.map((d) => d.v), 1);
   const paso = niceStep(max);
@@ -679,7 +1072,7 @@ function graficaColumnas(datos, { prom = 0, alto = 180 } = {}) {
       s += `<path class="col ${d.actual ? 'actual' : ''}" data-col="${i}" d="M${x},${H - bot} V${H - bot - h + r} Q${x},${H - bot - h} ${x + r},${H - bot - h} H${x + ancho - r} Q${x + ancho},${H - bot - h} ${x + ancho},${H - bot - h + r} V${H - bot} Z"/>`;
     }
     s += `<text class="eje" x="${cx}" y="${H - 6}" text-anchor="middle">${esc(d.et)}</text>`;
-    if ((i === iMax || i === iUlt) && d.v > 0) s += `<text class="valor-col" x="${cx}" y="${(H - bot - h - 6).toFixed(1)}" text-anchor="middle">${fmtK(d.v)}</text>`;
+    if (!sinValores && (i === iMax || i === iUlt) && d.v > 0) s += `<text class="valor-col" x="${cx}" y="${(H - bot - h - 6).toFixed(1)}" text-anchor="middle">${fmtK(d.v)}</text>`;
     s += `<rect class="zona" x="${izq + banda * i}" y="0" width="${banda}" height="${H}" data-tip="${esc(`<b>${esc(d.tip || d.et)}</b> · ${fmt(d.v)}`)}" data-colsel="${i}"/>`;
   });
   if (prom) s += `<line class="prom" x1="${izq}" x2="${W}" y1="${y(prom).toFixed(1)}" y2="${y(prom).toFixed(1)}"/>`;
@@ -703,6 +1096,7 @@ function mostrarTip(el, x, y) {
   t.style.top = y + 'px';
   t.hidden = false;
   const svg = el.closest('svg');
+  if (!svg) return;
   svg.querySelectorAll('.col.sel').forEach((c) => c.classList.remove('sel'));
   const col = svg.querySelector(`[data-col="${el.dataset.colsel}"]`);
   if (col) col.classList.add('sel');
@@ -740,7 +1134,7 @@ function vistaAjustes() {
   <div class="tarjeta plana lista-aj">
     ${item('editarTarjetas', 'i-tarjeta', 'Tus tarjetas y cuentas', `${E.tarjetasVistas.length}`)}
     ${item('editarReglas', 'i-regla', 'Tus correcciones', `${nReglas}`)}
-    ${item('clasificar', 'i-chispa', 'Revisar sin categoría', `${gruposPorClasificar().length}`)}
+    ${item('revisar', 'i-chispa', 'Revisar lo que clasificó la IA', `${gruposPorRevisar().length}`)}
   </div>
   <p class="texto-3 peq" style="margin:8px 4px 0">La IA clasifica sola cada comercio nuevo. Las tarjetas aparecen solas con su primer correo; aquí sólo les pones nombre.</p>
   </div><div>
@@ -802,6 +1196,7 @@ function hojaDetalle(id) {
       <div class="n">${esc(m.nombre)}</div>
       <div class="d">${esc(fDiaLargo(m.f))}${m.h ? ` · ${m.h}` : ''}${m.tj ? ` · ${esc(nombreTarjeta(m.tj))}` : ''}</div>
       ${m.extra && m.extra.concepto ? `<div class="d">Concepto: ${esc(m.extra.concepto)}</div>` : ''}
+      <div class="origen">${etiquetaOrigen(m)}</div>
     </div>
     <h4>Categoría</h4>
     ${rejillaCats(lista, m.cat, 'ponerCat', `data-id="${esc(m.id)}"`)}
@@ -815,7 +1210,7 @@ function hojaDetalle(id) {
       <input id="notaMov" value="${esc(m.nota)}" placeholder="Ej. cena con amigos" autocomplete="off"></label>
     <div class="texto-3 peq" style="margin:6px 2px 14px;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all">${esc(m.c)}</div>
     <div class="dos">
-      <button class="btn" data-acc="verComercio" data-k="${esc(m.k)}">Ver todos</button>
+      <button class="btn" data-acc="verComercio" data-g="${esc(m.g)}">Ver todos</button>
       ${m.manual ? `<button class="btn peligro" data-acc="borrarManual" data-id="${esc(m.id)}">${ic('i-papelera')}Borrar</button>` : '<button class="btn primario" data-acc="cerrar">Listo</button>'}
     </div>`, () => guardarTextosDetalle(m));
 }
@@ -857,41 +1252,55 @@ function ponerCategoria(id, cat) {
 }
 function cerrarHojaSinGuardar() { alCerrarHoja = null; cerrarHoja(); }
 
-/* Clasificar en serie */
-function gruposPorClasificar() {
+/* Revisar lo que clasificó la IA: lo nuevo desde la última revisión y lo dudoso. Todo es opcional. */
+function gruposPorRevisar() {
+  const desde = E.aj.revisado_en || 0;
   const g = new Map();
   for (const m of E.movs) {
-    const pendiente = (m.cat === 'otros' && m.tipo === 'compra') || (m.tipo === 'transferencia' && !E.aj.reglas[m.k] && !E.aj.revisados[m.k] && !(E.aj.cambios[m.id] || {}).cat);
-    if (!pendiente) continue;
-    const x = g.get(m.k) || { k: m.k, total: 0, n: 0, ultimo: m.f, m };
+    if (m.tipo !== 'compra' || m.origen === 'tu' || E.aj.revisados[m.k]) continue;
+    const d = E.dicc[m.k];
+    const nuevo = d && Date.parse(d.creado) > desde;
+    const dudoso = m.conf != null ? m.conf < 0.6 && m.sub !== 'persona' : m.cat === 'otros';
+    if (!nuevo && !dudoso) continue;
+    const x = g.get(m.k) || { k: m.k, total: 0, n: 0, ultimo: m.f, m, nuevo, dudoso };
     x.total += m.m; x.n += 1;
     g.set(m.k, x);
   }
-  return [...g.values()].sort((a, b) => b.total - a.total);
+  return [...g.values()].sort((a, b) => (b.dudoso - a.dudoso) || (b.total - a.total));
 }
 
-function hojaClasificar(i = 0) {
-  const grupos = gruposPorClasificar();
+function etiquetaOrigen(m) {
+  if (m.origen === 'tu') return `${ic('i-check')}Lo corregiste tú`;
+  if (m.origen === 'auto') return `${ic('c-propias')}Detectado: cuenta a la que mandas y de la que recibes`;
+  if (m.origen === 'ia') return `${ic('i-chispa')}Clasificado por IA${m.conf != null ? ` · ${Math.round(m.conf * 100)} % segura` : ''}${m.sub ? ` · ${esc(m.sub)}` : ''}${m.esencial != null ? ` · ${m.esencial ? 'necesario' : 'gusto'}` : ''}`;
+  if (m.tipo === 'transferencia') return `${ic('c-transferencias')}Transferencia: sólo tú sabes a quién`;
+  return `${ic('i-regla')}Regla automática (la IA lo verá esta noche)`;
+}
+
+function hojaRevisar(i = 0) {
+  const grupos = gruposPorRevisar();
   if (!grupos.length || i >= grupos.length) {
-    abrirHoja(`${cabHoja('Clasificar')}${vacio('i-check', '¡Todo en orden!', 'No quedan comercios por clasificar.')}<button class="btn primario ancho" data-acc="cerrar">Listo</button>`);
+    E.aj.revisado_en = Date.now(); guardarAjustes();
+    abrirHoja(`${cabHoja('Revisar')}${vacio('i-check', '¡Todo revisado!', 'La IA seguirá clasificando sola lo que llegue.')}<button class="btn primario ancho" data-acc="cerrar">Listo</button>`, () => repintar());
     return;
   }
   const x = grupos[i];
-  const lista = x.m.tipo === 'transferencia' ? ['transferencias', 'propias', 'servicios', 'comida', 'compras', 'super', 'apuestas', 'salud', 'entretenimiento', 'viajes', 'efectivo', 'otros'] : CATS_GASTO.filter((c) => c !== 'otros');
-  const hechos = Math.min(E.clasifPos || 0, E.clasifTotal - 1);
-  abrirHoja(`${cabHoja('Clasificar')}
-    <div class="progreso"><i style="width:${((hechos / E.clasifTotal) * 100).toFixed(1)}%"></i></div>
-    <div class="texto-3 peq">${hechos + 1} de ${E.clasifTotal}</div>
+  const total = E.revTotal || grupos.length;
+  const hechos = Math.min(E.revPos || 0, total - 1);
+  abrirHoja(`${cabHoja('Revisar lo nuevo')}
+    <div class="progreso"><i style="width:${((hechos / total) * 100).toFixed(1)}%"></i></div>
+    <div class="texto-3 peq">${hechos + 1} de ${total} · ${x.dudoso ? 'la IA no está segura' : 'comercio nuevo'}</div>
     <div class="clasif"><div class="comercio">
       <div class="n">${esc(x.m.nombre)}</div>
-      <div class="d">${x.n} ${x.n === 1 ? 'movimiento' : 'movimientos'} · <span class="num">${fmt(x.total)}</span> · último ${esc(fDia(x.ultimo))}</div>
+      <div class="d">${x.n} ${x.n === 1 ? 'compra' : 'compras'} · <span class="num">${fmt(x.total)}</span> · última ${esc(fDia(x.ultimo))}</div>
       <div class="crudo">${esc(x.m.c)}</div>
-      ${x.m.tipo === 'transferencia' ? '<div class="texto-2 peq" style="margin-top:10px">¿Es un gasto o dinero que mueves entre tus cuentas?</div>' : ''}
+      <div class="origen">${etiquetaOrigen(x.m)}</div>
     </div></div>
-    ${rejillaCats(lista, null, 'clasifCat', `data-k="${esc(x.k)}" data-i="${i}"`)}
-    <label class="campo" style="margin-top:14px"><span>Ponle un nombre (opcional)</span><input id="clasifNombre" placeholder="${esc(x.m.nombre)}" autocomplete="off"></label>
-    <div class="dos"><button class="btn" data-acc="clasifSaltar" data-i="${i}">Saltar</button><button class="btn" data-acc="cerrar">Terminar</button></div>`,
-  () => { E.clasifTotal = 0; repintar(); });
+    <button class="btn primario ancho" style="margin:4px 0 14px" data-acc="revBien" data-k="${esc(x.k)}" data-i="${i}">${ic('i-check')}Está bien: ${esc(CATS[x.m.cat].n)}</button>
+    <h4>O cámbialo</h4>
+    ${rejillaCats(CATS_GASTO.filter((c) => c !== 'transferencias'), x.m.cat, 'revCat', `data-k="${esc(x.k)}" data-i="${i}"`)}
+    <div class="dos" style="margin-top:14px"><button class="btn" data-acc="revBienTodo">Todo está bien</button><button class="btn" data-acc="cerrar">Después</button></div>`,
+  () => repintar());
 }
 
 /* Agregar gasto a mano */
@@ -988,6 +1397,14 @@ async function sincronizarAhora(primeraVez) {
       pintarProgreso();
       if (!r.pendientes) break;
     }
+    // Bonche listo: la IA clasifica junto todo comercio que aún no está en el diccionario
+    E.progreso.fase = 'ia';
+    for (let i = 0; i < 12; i++) {
+      const c = await llamar('sincronizar', { accion: 'clasificar' });
+      E.progreso.ia = (E.progreso.ia || 0) + (c.clasificados || 0);
+      pintarProgreso();
+      if (!c.restantes || !c.clasificados) break;
+    }
     await cargarTodo();
     const nuevos = E.datos.movs.length - antes;
     avisar(primeraVez && nuevos > 0 ? `Listo: ${nuevos.toLocaleString('es-MX')} movimientos` : nuevos > 0 ? `${nuevos} ${nuevos === 1 ? 'movimiento nuevo' : 'movimientos nuevos'}` : 'Ya estabas al día');
@@ -1004,7 +1421,7 @@ function tarjetaProgreso() {
   if (!p) return '';
   const pct = p.total ? Math.min(100, (p.hechos / p.total) * 100) : 4;
   return `<section class="tarjeta" id="progreso" style="margin-bottom:12px">
-    <div class="etiqueta texto-2" style="font-weight:600;display:flex;gap:8px;align-items:center">${ic('i-actualizar', 'class="gira"')}Leyendo tus correos de Santander…</div>
+    <div class="etiqueta texto-2" style="font-weight:600;display:flex;gap:8px;align-items:center">${ic('i-actualizar', 'class="gira"')}${p.fase === 'ia' ? `La IA está clasificando los comercios nuevos…${p.ia ? ` (${p.ia})` : ''}` : 'Leyendo tus correos de Santander…'}</div>
     <div class="medidor"><i style="width:${pct.toFixed(1)}%"></i></div>
     <div class="medidor-pie"><span>${p.total ? `${p.hechos.toLocaleString('es-MX')} de ${p.total.toLocaleString('es-MX')}` : 'Buscando correos'}</span><span>la IA clasifica cada comercio</span></div>
   </section>`;
@@ -1114,10 +1531,10 @@ const ACC = {
   detalle: (d) => { E.hojaTodos = true; hojaDetalle(d.id); },
   alternarTodos: (d, b) => { E.hojaTodos = !(E.hojaTodos !== false); b.querySelector('.sw').classList.toggle('on', E.hojaTodos); },
   ponerCat: (d) => ponerCategoria(d.id, d.cat),
-  verCategoria: (d) => { Object.assign(E.f, { cat: d.cat, tj: null, k: null, q: '', tipo: d.cat === 'ingreso' ? 'ingresos' : 'gastos', desde: d.desde, hasta: d.hasta, limite: 120 }); ir('movimientos'); },
-  verComercio: (d) => { cerrarHojaSinGuardar(); Object.assign(E.f, { k: d.k, cat: null, tj: null, q: '', tipo: 'todo', desde: null, hasta: null, todo: true, limite: 120 }); ir('movimientos'); },
-  verTarjeta: (d) => { const R = rangoAnalisis(); Object.assign(E.f, { tj: d.tj, cat: null, k: null, q: '', tipo: 'gastos', desde: R.desde, hasta: R.hasta, limite: 120 }); ir('movimientos'); },
-  quitarFiltroExtra: () => { Object.assign(E.f, { k: null, desde: null, hasta: null, todo: false }); repintar(); },
+  verCategoria: (d) => { Object.assign(E.f, { cat: d.cat, tj: null, k: null, g: null, q: '', tipo: d.cat === 'ingreso' ? 'ingresos' : 'gastos', desde: d.desde, hasta: d.hasta, limite: 120 }); ir('movimientos'); },
+  verComercio: (d) => { cerrarHojaSinGuardar(); Object.assign(E.f, { k: d.k || null, g: d.g || null, cat: null, tj: null, q: '', tipo: 'todo', desde: null, hasta: null, todo: true, limite: 120 }); ir('movimientos'); },
+  verTarjeta: (d) => { const R = rangoAnalisis(); Object.assign(E.f, { tj: d.tj, cat: null, k: null, g: null, q: '', tipo: 'gastos', desde: R.desde, hasta: R.hasta, limite: 120 }); ir('movimientos'); },
+  quitarFiltroExtra: () => { Object.assign(E.f, { k: null, g: null, desde: null, hasta: null, todo: false }); repintar(); },
   tipoMov: (d) => { E.f.tipo = d.v; E.f.cat = null; E.f.limite = 120; repintar(); },
   catMov: (d) => { E.f.cat = d.v || null; E.f.limite = 120; repintar(); },
   tjMov: (d) => { E.f.tj = d.v || null; E.f.limite = 120; repintar(); },
@@ -1125,17 +1542,15 @@ const ACC = {
   todoMov: () => { E.f.todo = !E.f.todo; E.f.limite = 120; repintar(); },
   masMovs: () => { E.f.limite += 200; repintar(); },
   limpiarQ: () => { E.f.q = ''; repintar(); },
+  pestanaAn: (d) => { E.an.vista = d.v; if ((d.v === 'habitos' || d.v === 'ahorro') && E.an.rango === 'todo') E.an.rango = '6m'; repintar(); },
+  mesDia: (d) => { E.an.mesDia = mesMas(E.an.mesDia || mesDe(iso(hoy())), +d.d); repintar(); },
+  verDia: (d) => hojaDia(d.f),
   rango: (d) => { E.an.rango = d.v; if (d.v === 'mes') E.an.mes = mesDe(iso(hoy())); repintar(); },
   mesAn: (d) => { E.an.mes = mesMas(E.an.mes || mesDe(iso(hoy())), +d.d); repintar(); },
-  clasificar: () => { E.clasifTotal = Math.max(1, gruposPorClasificar().length); E.clasifPos = 0; hojaClasificar(0); },
-  clasifCat: (d) => {
-    E.aj.reglas[d.k] = d.cat; E.aj.revisados[d.k] = 1;
-    const n = $('#clasifNombre') && $('#clasifNombre').value.trim();
-    if (n) E.aj.nombres[d.k] = n;
-    E.clasifPos = (E.clasifPos || 0) + 1;
-    guardarAjustes(); preparar(); hojaClasificar(+d.i);
-  },
-  clasifSaltar: (d) => { E.clasifPos = (E.clasifPos || 0) + 1; hojaClasificar(+d.i + 1); },
+  revisar: () => { E.revTotal = Math.max(1, gruposPorRevisar().length); E.revPos = 0; hojaRevisar(0); },
+  revBien: (d) => { E.aj.revisados[d.k] = 1; guardarAjustes(); E.revPos = (E.revPos || 0) + 1; hojaRevisar(+d.i); },
+  revCat: (d) => { E.aj.reglas[d.k] = d.cat; E.aj.revisados[d.k] = 1; guardarAjustes(); preparar(); E.revPos = (E.revPos || 0) + 1; hojaRevisar(+d.i); },
+  revBienTodo: () => { for (const x of gruposPorRevisar()) E.aj.revisados[x.k] = 1; E.aj.revisado_en = Date.now(); guardarAjustes(); cerrarHoja(); avisar('Listo, todo revisado'); },
   editarPago: hojaPago,
   guardarPago: () => {
     const n = (s) => parseFloat(String(s).replace(/[$,\s]/g, '')) || 0;
@@ -1207,8 +1622,8 @@ const ACC = {
 document.addEventListener('click', (e) => {
   const nav = e.target.closest('[data-ir]');
   if (nav) {
-    if (nav.closest('#barra') && nav.dataset.ir === 'movimientos') Object.assign(E.f, { cat: null, tj: null, k: null, desde: null, hasta: null, todo: false, limite: 120 });
-    if (nav.closest('.tarjeta, .seccion') && nav.dataset.ir === 'movimientos') Object.assign(E.f, { cat: null, tj: null, k: null, q: '', desde: null, hasta: null, todo: false, tipo: 'todo', limite: 120 });
+    if (nav.closest('#barra') && nav.dataset.ir === 'movimientos') Object.assign(E.f, { cat: null, tj: null, k: null, g: null, desde: null, hasta: null, todo: false, limite: 120 });
+    if (nav.closest('.tarjeta, .seccion') && nav.dataset.ir === 'movimientos') Object.assign(E.f, { cat: null, tj: null, k: null, g: null, q: '', desde: null, hasta: null, todo: false, tipo: 'todo', limite: 120 });
     cerrarHojaSinGuardar(); ir(nav.dataset.ir); return;
   }
   const b = e.target.closest('[data-acc]');
